@@ -1,0 +1,13 @@
+{
+  "_entry_point": "savings_plan_review",
+  "_description": "Quarterly savings-plan review \u2014 utilisation dropped below 80%, commitments_agent quantifies impact + recommends rebalancing.",
+  "payload": {
+    "review_id": "spr-2026-q2",
+    "cloud": "aws",
+    "savings_plan_id": "sp-1y-compute-2025-08",
+    "commitment_per_hour_usd": 4.2,
+    "term_remaining_months": 14,
+    "utilisation_30d_pct": 0.73,
+    "target_utilisation_pct": 0.95
+  }
+}

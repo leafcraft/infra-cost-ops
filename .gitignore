@@ -1,0 +1,18 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.pytest_cache/
+.hypothesis/
+logs/
+*.log
+# Seeded dev store (agency/_shared/store.py) — re-seeds on first read.
+data/
+tests/_store_tmp/
+.DS_Store
+.idea/
+.vscode/
+*.egg-info/
+build/
+dist/

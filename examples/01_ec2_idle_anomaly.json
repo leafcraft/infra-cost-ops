@@ -1,0 +1,21 @@
+{
+  "_entry_point": "manual_action",
+  "_description": "Anomaly detector flags 6 EC2 instances at <5% CPU for 7 consecutive days \u2014 cost_anomaly_agent triages, rightsizing recommends shutdown candidates.",
+  "payload": {
+    "tune_id": "tune-2026-0612-ec2-idle",
+    "cloud": "aws",
+    "resource_kind": "ec2",
+    "resource_ids": [
+      "i-0a1b2c3d",
+      "i-0e4f5g6h",
+      "i-0i7j8k9l",
+      "i-0m1n2o3p",
+      "i-0q4r5s6t",
+      "i-0u7v8w9x"
+    ],
+    "anomaly_type": "idle",
+    "observed_avg_cpu_pct_7d": 3.4,
+    "monthly_cost_cents": 184220,
+    "instance_type": "m5.xlarge"
+  }
+}

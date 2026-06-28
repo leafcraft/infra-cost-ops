@@ -1,0 +1,14 @@
+{
+  "_entry_point": "ri_expiry_alert",
+  "_description": "Reserved Instance expires in 30 days \u2014 must renew, restructure, or let lapse. commitments_agent forecasts post-expiry on-demand cost.",
+  "payload": {
+    "alert_id": "ri-expiry-2026-06-04",
+    "cloud": "aws",
+    "ri_id": "ri-r5-2y-2024-07",
+    "expires_at_utc": "2026-07-15T00:00:00Z",
+    "instance_family": "r5",
+    "instance_count": 8,
+    "current_utilisation_pct": 0.92,
+    "on_demand_monthly_cost_cents": 472400
+  }
+}

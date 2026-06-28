@@ -1,0 +1,17 @@
+{
+  "_entry_point": "manual_action",
+  "_description": "Terraform plan shows untracked changes in production VPC \u2014 IaC drift triggers SRE review.",
+  "payload": {
+    "tune_id": "drift-2026-06-04",
+    "cloud": "aws",
+    "resource_kind": "vpc",
+    "resource_id": "vpc-prod-us-east-1",
+    "anomaly_type": "iac_drift",
+    "drifted_attributes": [
+      "security_groups[3].ingress",
+      "route_tables[1].routes"
+    ],
+    "drift_detected_at_utc": "2026-06-04T11:34:00Z",
+    "last_terraform_apply": "2026-05-30T16:22:00Z"
+  }
+}
