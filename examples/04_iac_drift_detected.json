@@ -1,5 +1,5 @@
 {
-  "_entry_point": "manual_action",
+  "_entry_point": "iac_commit",
   "_description": "Terraform plan shows untracked changes in production VPC \u2014 IaC drift triggers SRE review.",
   "payload": {
     "tune_id": "drift-2026-06-04",

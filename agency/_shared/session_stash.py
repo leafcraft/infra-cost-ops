@@ -26,7 +26,13 @@ def stash_put(session_id: str, payload: dict[str, Any]) -> None:
     if not session_id:
         return
     with _LOCK:
-        _STASH[session_id] = dict(payload)
+        # Preserve the per-session bounded-loop counters across a payload
+        # overwrite — they are session-scoped, independent of the payload.
+        prior = _STASH.get(session_id) or {}
+        rec = dict(payload)
+        if "_counters" in prior:
+            rec["_counters"] = prior["_counters"]
+        _STASH[session_id] = rec
         _STASH.move_to_end(session_id)
         while len(_STASH) > _MAX_SESSIONS:
             _STASH.popitem(last=False)

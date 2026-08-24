@@ -6,6 +6,7 @@ import sys
 from dotenv import load_dotenv
 from leafmesh import EventType, LeafMesh, LeafMeshLogger
 
+import agency.tools  # noqa: F401 — registers @global_tool tools before start()
 from agency._shared import audit_logger as _audit_logger
 
 load_dotenv()

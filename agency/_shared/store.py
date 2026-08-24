@@ -58,6 +58,9 @@ BLAST_RADIUS_AUTO_CAP = 5
 # Budget-overage floor: a forecast overage at/above this fraction is an
 # overage that requires a human, not an auto-noted alert.
 BUDGET_OVERAGE_FLOOR_PCT = 0.10
+# Tag-coverage floor: a sweep whose compliant fraction falls below this needs
+# SRE action, not an auto-noted alert.
+COVERAGE_FLOOR_PCT = 0.90
 
 
 def _now() -> str:
@@ -225,6 +228,26 @@ _SEED_BUDGETS: dict[str, Any] = {
     "CC-WEB":    {"cost_center": "CC-WEB",    "monthly_budget_cents": 3000000},
 }
 
+# Tag-compliance backlog — the resources Gwen's fanned-out sweep works
+# through. Every required tag present = compliant; a blank required tag
+# (cost_center / env / owner) = non-compliant. PROD: the Resource Groups
+# Tagging API / CMDB inventory. Sized so a 2-copy fan-out splits it.
+REQUIRED_TAGS = ("cost_center", "env", "owner")
+_SEED_TAG_BACKLOG: list[dict[str, Any]] = [
+    {"resource_id": "i-0a1b2c3d", "kind": "ec2", "monthly_cost_cents": 184220,
+     "tags": {"cost_center": "CC-DATA", "env": "prod", "owner": "data-eng"}},
+    {"resource_id": "db-prod-orders-1", "kind": "rds", "monthly_cost_cents": 612000,
+     "tags": {"cost_center": "CC-ORDERS", "env": "prod", "owner": "orders"}},
+    {"resource_id": "i-0e4f5g6h", "kind": "ec2", "monthly_cost_cents": 92110,
+     "tags": {"cost_center": "CC-WEB", "env": "prod", "owner": ""}},          # missing owner
+    {"resource_id": "s3-assets-cdn", "kind": "s3", "monthly_cost_cents": 41000,
+     "tags": {"cost_center": "", "env": "prod", "owner": "web"}},            # missing cost_center
+    {"resource_id": "gke-batch-pool", "kind": "gke", "monthly_cost_cents": 158900,
+     "tags": {"cost_center": "CC-DATA", "env": "", "owner": ""}},            # missing env + owner
+    {"resource_id": "lambda-thumbnailer", "kind": "lambda", "monthly_cost_cents": 3400,
+     "tags": {"cost_center": "CC-WEB", "env": "prod", "owner": "web"}},
+]
+
 
 # ── Reads (the cloud systems of record) ──────────────────────────────
 def telemetry(tune_id: str = "") -> dict[str, Any]:
@@ -266,6 +289,33 @@ def workload_governance(workload_id: str = "") -> dict[str, Any]:
 def budget(cost_center: str) -> dict[str, Any]:
     """Monthly budget for a cost-center. PROD: AWS/GCP/Azure Budgets."""
     return _seeded("budgets", _SEED_BUDGETS).get(cost_center, {})
+
+
+def tag_inventory(cost_center: str = "") -> list[dict[str, Any]]:
+    """The full tag/CMDB inventory (read-only, does not consume the sweep
+    backlog). PROD: the Resource Groups Tagging API / CMDB."""
+    rows = list(_SEED_TAG_BACKLOG)
+    if cost_center:
+        rows = [r for r in rows if (r.get("tags") or {}).get("cost_center") == cost_center]
+    return rows
+
+
+def claim_tag_batch(batch_size: int) -> list[dict[str, Any]]:
+    """ATOMICALLY pop up to `batch_size` resources off the tag-sweep backlog
+    queue. Each fanned-out copy (instances: N) claims a DISJOINT batch, so the
+    copies never double-count. Lock-guarded + persisted so concurrent copies in
+    one process split the queue. The queue REFILLS from the seed backlog once
+    fully drained, so repeated sweeps keep working day-0. PROD: an atomic
+    `LPOP count` / `UPDATE ... SKIP LOCKED RETURNING` on your real queue."""
+    n = max(1, int(batch_size or 1))
+    with _LOCK:
+        q = _load("tag_backlog_queue")
+        if not isinstance(q, list) or not q:
+            q = [dict(r) for r in _SEED_TAG_BACKLOG]   # (re)fill on first call / drain
+        claimed = q[:n]
+        remaining = q[n:]
+        _save("tag_backlog_queue", remaining)
+    return claimed
 
 
 # ════════════════════════════════════════════════════════════════════

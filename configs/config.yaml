@@ -1,250 +1,276 @@
-# infra-cost-ops — Infra Cost Operations (cloud spend tuning + drift)
+# infra-cost-ops — Infra Cost-Ops Pod
 #
-# infra × saas. cost anomaly+right-size (one agent) → commitments →
-# drift detect → tune. SRE reviews risky tunes; safe tunes auto-apply.
-# FinOps governance (tags + budgets) runs alongside the tune chain.
+# A pod of digital employees + human roles that runs cloud-spend tuning end
+# to end: an anomaly is opened as a case -> classified + a right-sizing tune
+# proposed (confidence + blast-radius scored) -> compliance-vetoed ->
+# SRE/CTO gate on anything risky -> the tune is APPLIED (fail-closed
+# actuator) -> every change hash-chained into a WORM audit. Commitments,
+# IaC-drift and FinOps-governance analysts run alongside the tune chain.
+#
+# The pod is a TEAM, not a pipeline. Every wire is conditional; every
+# hand-off is a finished contract; every human gate default-denies on
+# silence; the finisher (cost_tuner) produces the real artifact and fails
+# closed; the WORM sink is the terminus. Cloud systems (Cost Explorer /
+# CloudWatch / RI-SP / Terraform / CMDB / Budgets) are TOOLS inside agents,
+# never members.
+#
+# Design doctrine: .claude/skills/leafmesh/building-agents-thoroughly.md
+# Field reference:  .claude/skills/leafmesh/agent-config-fields.md
 
 name: "infra-cost-ops"
-version: "1.0.0"
-architecture: "managed_mesh"
-environment: "development"
+version: 1.0.0
+architecture: managed_mesh
+environment: development
 debug: true
-log_level: "INFO"
+log_level: INFO
 
-redis:
-  host: "${REDIS_HOST:localhost}"
-  port: ${REDIS_PORT:6379}
-  db: 0
-  password: "${REDIS_PASSWORD:}"
-  auto_storage: true
-  decode_responses: true
-  default_ttl: 86400
-  session_ttl: 604800
+persistence:
+  backend: redis
+  redis:
+    host: "${REDIS_HOST:localhost}"
+    port: ${REDIS_PORT:6379}
+    db: 0
+    password: "${REDIS_PASSWORD:}"
 
 auto_discover:
-  directory: "./agency"
-  pattern: "*_agent.py"
-  recursive: false
+  directory: ./agency
+  pattern: '*_agent.py'
 
+# The Manager is the SUPERVISOR — it watches every hand-off and escalates
+# stalls / contract violations / repeated errors to the accountable human
+# (the CTO). It is NOT a router in the middle of the team (routing: static).
 manager:
-  enabled: true
-  model: "gpt-4o-mini"
-  domain: "generic"
-  can_intervene: true
+  model: gpt-4o-mini
+  domain: generic
   prompt: |
-    Cloud cost optimization mesh. Successful turn:
-      - cost_anomaly_agent flags spike / drift / idle AND proposes
-        the instance / pod / replica tuning in the same turn
-      - commitments_agent reviews RI/SP utilisation AND forecasts
-        reserved-capacity savings
-      - iac_drift_agent reconciles intended vs actual state
-      - finops_governance_agent surfaces untagged costs and
-        budget / forecast / overage alerts from the enterprise
-        cloud-billing API (Cost Explorer / Cloud Billing / Cost
-        Management via MCP)
-      - regulatory_monitor_agent vetoes tunes that violate data
-        residency or encryption mandates
-      - SRE reviews production / data-tier changes
-      - cost_tuner applies safe changes
-      - audit logs every applied change
-
-    Escalate when:
-      - tune touches production data tier (databases, storage)
-      - applied change increases cost or risks SLA
-      - drift on critical resources (auth, billing, security)
-
+    This mesh runs continuous cloud-cost tuning. A successful case flows
+    anomaly -> Cyra (open case, orchestrate) -> Axel (classify + propose the
+    right-sizing tune, blast-radius scored) -> Vera (compliance veto) -> the
+    SRE gate on anything risky -> Tucker (apply the tune, fail-closed) ->
+    the WORM audit. Rhea reviews commitments weekly, Dref reconciles IaC
+    drift, Gwen sweeps tags + budgets. Escalate to the CTO when: a tune
+    loops on re-proposal past its bound, the SRE gate times out, a
+    data-tier / critical-resource / compliance-vetoed change is in play, or
+    any agent hands off a malformed artifact. Silence never advances a tune.
   routing:
-    mode: "learning"
-    memory_size: 200
-    confidence_threshold: 0.7
-    fallback: "all"
-    decay_days: 30
-
-  knowledge:
-    serviceName: "mongo_main"
-    enabled: true
-    groupName: "cost_runbook"
-
+    mode: static
   escalation:
     targets:
-      - type: "human_agent"
-        agent: "cto_human"
-      - type: "webhook"
+      - type: human_agent
+        agent: cto_human
+      - type: webhook
         url: "${PAGER_WEBHOOK:https://events.pagerduty.com/v2/enqueue}"
-        method: "POST"
+        method: POST
         headers:
-          Content-Type: "application/json"
+          Content-Type: application/json
         payload_template:
           incident_id: "{{tune_id}}"
           severity: "{{severity}}"
           message: "{{message}}"
           session_id: "{{session_id}}"
-      - type: "channel"
-        provider: "slack"
+      - type: channel
+        provider: slack
         channel_id: "${SLACK_INFRA_CHANNEL:}"
         message_template: "[infra-cost] {{message}} — tune {{tune_id}}"
     auto_escalate:
-      max_retries: 2
-      max_errors_per_session: 3
+      max_retries: 3
+      max_errors_per_session: 5
       timeout_threshold: 2
 
-  health_check_interval: 60
-  agent_timeout_threshold: 300
-  chain_completion_timeout: 600
-
 mesh:
-  call_timeout: 120
+  call_timeout: 150
 
+# 2.4.131 runtime block — cost_anomaly runs a super-agent (plan/execute/
+# verify) over a tune, which can run long. Everything else stays default
+# (omission is meaningful; we do not pre-fill defaults). NOTE: the
+# `timeouts` block is REJECTED by SDK <= 2.4.130 — it must land WITH the
+# 2.4.131 floor, never before.
+timeouts:
+  llm_hard_timeout_s: 300
+
+# The payload shape a cost anomaly carries (documentation for callers).
 data_structures:
   CostEvent:
-    type: "object"
+    type: object
     properties:
-      tune_id: { type: "string" }
-      cloud: { type: "string" }            # aws | gcp | azure
-      resource_id: { type: "string" }
-      resource_kind: { type: "string" }    # ec2 | rds | gke | etc.
-      anomaly_type: { type: "string" }
-      received_at_utc: { type: "string" }
+      tune_id: { type: string }
+      cloud: { type: string }            # aws | gcp | azure
+      resource_id: { type: string }
+      resource_kind: { type: string }    # ec2 | rds | gke | etc.
+      anomaly_type: { type: string }
+      received_at_utc: { type: string }
     required: ["cloud"]
 
+# ── Entry points — one per real-world trigger. Case-opening triggers land
+#    on the coordinator; scheduled sweeps + direct checks land on the
+#    specialist that owns them. ────────────────────────────────────────────
 entry_points:
-  - name: "cost_anomaly_webhook"
-    target: "cost_anomaly_agent"
-    description: "Cloud cost-explorer anomaly alert"
-
-  - name: "scheduled_rightsize"
-    target: "cost_anomaly_agent"
-    description: "Daily right-sizing sweep (classify + tune in one call)"
-
-  - name: "scheduled_reserved"
-    target: "commitments_agent"
-    description: "Weekly reserved-capacity refresh"
-
-  - name: "iac_commit"
-    target: "iac_drift_agent"
-    description: "Terraform / Pulumi commit triggers drift check"
-
-  - name: "manual_action"
-    target: "cost_anomaly_agent"
-    description: "Operator-initiated"
-
-  - name: "weekly_commit_review"
-    target: "commitments_agent"
-    description: "Mon 07:00 cron — RI/SP utilisation + rebalance recommendations"
-
-  - name: "tag_compliance_sweep"
-    target: "finops_governance_agent"
-    description: "Sweep the cloud tag inventory (via the billing/CMDB MCP connector) for missing required tags"
-
-  - name: "tag_inventory_ingest"
-    target: "finops_governance_agent"
-    description: "Forward one or more cloud resources to the billing/CMDB MCP connector"
-
-  - name: "budget_check"
-    target: "finops_governance_agent"
-    description: "Check MTD spend vs budget for a cost-center (via the cloud-billing MCP connector)"
-
-  - name: "ri_expiry_alert"
-    target: "commitments_agent"
-    description: "Reserved Instance within 30d of expiry — renew / re-shape / let lapse?"
-
-  - name: "savings_plan_review"
-    target: "commitments_agent"
-    description: "Savings Plan utilisation drifted < 80% — propose adjustment"
-
-
-# ── Direct-call entry points (every non-human, non-terminal
-#    agent is API-addressable; bypasses the upstream chain).
-#    Use for ad-hoc invocation, debugging, programmatic ingest.
-  - name: "direct_call_cost_tuner"
-    target: "cost_tuner_agent"
-    description: "On-demand direct call to cost_tuner (programmatic) — bypasses upstream chain"
-
-  # ── Lyzr-inspired agents (added in 2.3.x) ──
-  - name: "compliance_veto_check"
-    target: "regulatory_monitor_agent"
-    description: "Pre-tune check — does this region/encryption change violate data-residency or encryption mandates?"
-
+  - name: cost_anomaly_webhook
+    target: fin_coordinator_agent
+    description: "Cloud cost-explorer fires an anomaly — Cyra opens the case."
+    condition: always
+  - name: case_status
+    target: fin_coordinator_agent
+    description: "Anyone asks 'where is this tune?' — Cyra answers from the case record."
+    condition: always
+  - name: scheduled_rightsize
+    target: cost_anomaly_agent
+    description: "Daily right-sizing sweep (classify + propose in one call)."
+    condition: always
+  - name: manual_action
+    target: cost_anomaly_agent
+    description: "Operator-initiated anomaly triage."
+    condition: always
+  - name: weekly_commit_review
+    target: commitments_agent
+    description: "Mon 07:00 — RI/SP utilisation + rebalance recommendations."
+    condition: always
+  - name: ri_expiry_alert
+    target: commitments_agent
+    description: "Reserved Instance within 30d of expiry — renew / re-shape / lapse?"
+    condition: always
+  - name: savings_plan_review
+    target: commitments_agent
+    description: "Savings Plan utilisation drifted < 80% — propose adjustment."
+    condition: always
+  - name: iac_commit
+    target: iac_drift_agent
+    description: "Terraform / Pulumi commit triggers a drift reconciliation."
+    condition: always
+  - name: compliance_veto_check
+    target: regulatory_monitor_agent
+    description: "Pre-tune check — does this region/encryption change violate residency/encryption mandates?"
+    condition: always
+  - name: tag_compliance_sweep
+    target: finops_governance_agent
+    description: "Sweep the tag inventory for missing required tags (fans out over the backlog)."
+    condition: always
+  - name: budget_check
+    target: finops_governance_agent
+    description: "Check MTD spend vs budget for a cost-center."
+    condition: always
+  - name: sre_reply
+    target: sre_human
+    description: "HITL resume — the SRE approves / rejects / holds a tune."
+    condition: always
 
 agents:
 
-  # ────────────────────────────────────────────────────────────
-  # cost_anomaly_agent — SELF-RELIANT cost analyst. The LLM
-  # classifies the anomaly AND drafts the right-sizing tune in ONE
-  # call; the backing module (agency/cost_anomaly_agent.py) owns
-  # three Python jobs:
-  #   @pre_compose  pull the cost/usage telemetry + the resource's
-  #                 tags / blast-radius from the source store
-  #                 (Cost Explorer + CloudWatch + CMDB in prod).
-  #   @chain (1)    THE SAFETY-GATE FLOOR — re-derive data_tier from
-  #                 the resource kind, blast_radius from the CMDB,
-  #                 and FORCE is_safe_tune=false on any data-tier /
-  #                 new_resource / critical-resource / over-cap tune.
-  #                 The LLM can't waive it; it also recomputes the
-  #                 right-sizing savings math when the LLM omitted it.
-  #   @chain (2)    stash the floored tune payload BEFORE the
-  #                 sre_human gate so an approval can resume cost_tuner.
-  # ────────────────────────────────────────────────────────────
-  cost_anomaly_agent:
-    name: "cost_anomaly_agent"
-    agent_type: "llm"
-    description: "Classifies anomaly type + scope AND proposes the right-sizing tune"
-    model: "gpt-4o-mini"
-    temperature: 0.0
-    max_tokens: 1400
-    communication_type: "chain"
+  # ─────────────────────────────────────────────────────────────────────────
+  # Cyra — Cost-Case Coordinator (AI). Owns each tune case end to end: opens
+  # it, orchestrates the pod, keeps live status, is the one point of contact
+  # for the FinOps lead. Pure orchestration — never classifies, tunes, or
+  # approves. (Pure YAML — no backing module.)
+  # ─────────────────────────────────────────────────────────────────────────
+  fin_coordinator_agent:
+    name: fin_coordinator_agent
+    communication_type: chain
+    agent_type: llm
+    model: gpt-4o-mini
+    temperature: 0.1
+    description: "Cost-Case Coordinator — opens the case, orchestrates, keeps status, single point of contact."
     prompt: |
-      Two-stage task — return ONE JSON object with all keys.
+      You are Cyra, the Cost-Case Coordinator. You OWN each cloud-cost tune
+      case from the moment an anomaly arrives to the moment it is applied or
+      held. You orchestrate the pod and keep the FinOps lead informed — you
+      never classify an anomaly, propose a tune, or approve anything yourself.
 
-      Stage 1 — classify this cost anomaly:
-        - anomaly_type: must be EXACTLY one of: spike | drift | idle |
-          new_resource | wasted_idle. When the signals are ambiguous,
-          use "drift".
-        - daily_impact_cents: estimated daily $ impact in cents
-          (integer; 0 when unknown)
-        - scope: single_resource | service | account — when unsure,
-          use "single_resource"
-        - production_tier: true if resource is in production serving path
-        - cited_signals: list of metrics / events that drove the classification
-        - sre_briefing: 3 sentence narrative for the SRE — NEVER empty.
-          Lead with anomaly type + daily $ impact. Note if
-          production-tier (high stakes). Recommend safe-tune vs human
-          review.
-
-      Stage 2 — propose the right-sizing tune for that anomaly:
-        - current_spec: object
-        - proposed_spec: object
-        - daily_savings_cents: number (integer cents)
-        - data_tier: bool      (database, storage = data tier)
-        - is_safe_tune: bool   (not data_tier AND no SLA risk)
-
-      HARD SAFEGUARDS — never violate these:
-        - If "data_tier" is true, "is_safe_tune" MUST be false.
-          Databases and storage are never auto-tuned.
-        - If "anomaly_type" is "new_resource", "is_safe_tune" MUST be
-          false and there is nothing to tune yet — still return the
-          Stage 2 keys with empty objects / 0 / false.
-        - Echo "tune_id" from the input payload UNCHANGED. When the
-          input has no tune_id, set it to "".
-
-      NOTE — data_tier, is_safe_tune, blast_radius and touches_critical
-      are RE-DERIVED deterministically by the safety-gate @chain floor in
-      agency/cost_anomaly_agent.py from the resource kind + the CMDB blast
-      radius; your values are a starting point the floor can only DOWNGRADE
-      (it never upgrades an unsafe tune to auto-apply). Return your best
-      estimate; the floor is the authority.
+      On a new anomaly: open a case, record the received time, hand it to Axel
+      (action = classify). On a status ask: answer the current stage /
+      waiting-on / next gate from the case record — nothing invented
+      (action = status). Route a stalled or contract-violating case to the
+      CTO (action = escalate); never make the risk call yourself.
 
       OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
-      {"anomaly_type": "", "daily_impact_cents": 0, "scope": "", "production_tier": false, "cited_signals": [], "sre_briefing": "", "current_spec": {}, "proposed_spec": {}, "daily_savings_cents": 0, "data_tier": false, "is_safe_tune": false, "blast_radius": 0, "touches_critical": false, "tune_id": ""}
+      {"action": ..., "tune_id": ..., "stage": ..., "waiting_on": ..., "summary": ...}
+    yields:
+      action: "string"        # classify | status | escalate
+      tune_id: "string"
+      stage: "string"
+      waiting_on: "string"
+      summary: "string"
+    inputs:
+      payload: "object"
+    can_call:
+      - agent: cost_anomaly_agent
+        condition: "calling_agent_response.action == 'classify'"
+      - agent: cto_human
+        condition: "calling_agent_response.action == 'escalate'"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Axel — Cost Analyst (AI, Super-Agent). Classifies the anomaly AND drafts
+  # the right-sizing tune in ONE call, then loops its tools until the picture
+  # is complete. This is where auto-apply-safety is won: the deterministic
+  # @chain safety floor RE-DERIVES data_tier / blast_radius / is_safe_tune
+  # from the resource kind + CMDB and can only DOWNGRADE the LLM — a database,
+  # a critical-resource fan-out, or an over-cap tune can never auto-apply.
+  # super_agent = autonomous plan/execute/verify over the tune. @chain = the
+  # safety floor + the pre-gate stash (fail closed). Tools read the cost
+  # telemetry + CMDB (dev store day-0; the commented mcp block wires prod).
+  # ─────────────────────────────────────────────────────────────────────────
+  cost_anomaly_agent:
+    name: cost_anomaly_agent
+    communication_type: chain
+    agent_type: llm
+    model: gpt-4o-mini
+    temperature: 0.0
+    max_tokens: 1400
+    max_tool_calls_per_message: 15   # tool reads + super-agent plan steps; default 5 truncates silently
+    description: "Cost Analyst — classifies the anomaly and proposes the right-sizing tune (blast-radius scored)."
+    # Scheduled right-sizing sweep — daily, in the BUSINESS timezone (NOT UTC).
+    # Also reachable via the scheduled_rightsize entry point. Set `timezone`
+    # to your operations timezone (an un-timezoned cron fires in UTC).
+    wake_up: "0 8 * * *"
+    timezone: "America/New_York"
+    wake_up_input:
+      trigger: scheduled_rightsize
+    super_agent:                     # DICT form = the tuning path (2.4.123+); the ONLY way to tune it
+      cost_ceiling: 100000
+      wall_clock: 900
+    prompt: |
+      You are Axel, the Cost Analyst. Turn a cost anomaly into a classified,
+      costed, right-sizing tune — and REFUSE to auto-apply anything risky.
+      Read the anomaly's telemetry, current spec, and CMDB blast-radius with
+      your tools before you score anything; you cannot size a resource you
+      have not read.
+
+      Stage 1 — classify:
+        - anomaly_type: EXACTLY one of spike | drift | idle | new_resource |
+          wasted_idle. When signals are ambiguous, use "drift".
+        - daily_impact_cents: integer cents (0 when unknown).
+        - scope: single_resource | service | account (unsure -> single_resource).
+        - production_tier: true if the resource is in the production serving path.
+        - cited_signals: the metrics / events that drove the classification.
+        - sre_briefing: 3 sentences for the SRE, NEVER empty — lead with the
+          anomaly type + daily $ impact; note production-tier; recommend
+          auto-apply vs human review.
+
+      Stage 2 — propose the tune:
+        - current_spec / proposed_spec: objects.
+        - daily_savings_cents: integer cents.
+        - data_tier: bool (databases, storage = data tier).
+        - is_safe_tune: bool (not data_tier AND no SLA risk).
+
+      HARD SAFEGUARDS — never violate:
+        - data_tier true => is_safe_tune MUST be false. Databases/storage are
+          never auto-tuned.
+        - anomaly_type "new_resource" => is_safe_tune MUST be false, and there
+          is nothing to tune yet: still return the Stage-2 keys with empty
+          objects / 0 / false.
+        - Echo "tune_id" from the input UNCHANGED; when absent, set "".
+
+      NOTE — data_tier, is_safe_tune, blast_radius, touches_critical and
+      reproposal_exhausted are RE-DERIVED deterministically by the @chain
+      safety floor in agency/cost_anomaly_agent.py; your values are a starting
+      point the floor can only DOWNGRADE (it never upgrades an unsafe tune to
+      auto-apply). Return your best estimate; the floor is the authority. Load
+      the `classify_anomaly` and `rightsize_tune` playbooks for the exact
+      read-before-score order.
+
+      OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
+      {"anomaly_type": "", "daily_impact_cents": 0, "scope": "", "production_tier": false, "cited_signals": [], "sre_briefing": "", "current_spec": {}, "proposed_spec": {}, "daily_savings_cents": 0, "data_tier": false, "is_safe_tune": false, "blast_radius": 0, "touches_critical": false, "tune_id": "", "reproposal_exhausted": false}
     enforce_yields: true
     enforce_yields_retry: 2
-    # knowledge: kept cost_patterns (anomaly classification corpus) —
-    # the absorbed sizing_model group folds into it; migrate any
-    # sizing rows into the cost_patterns group.
-    knowledge:
-      serviceName: "mongo_main"
-      enabled: true
-      groupName: "cost_patterns"
     yields:
       anomaly_type: "string"
       daily_impact_cents: "number"
@@ -260,111 +286,125 @@ agents:
       # Re-derived by the safety-gate @chain floor (deterministic):
       blast_radius: "number"           # downstream resource fan-out count
       touches_critical: "boolean"      # auth/billing/security/kms/iam
-      # Identity passthrough — the SRE inbox sees WHICH tune is on review
-      tune_id: "string"
+      tune_id: "string"                # identity passthrough — the SRE sees WHICH tune
+      reproposal_exhausted: "boolean"  # bounded re-propose back-edge counter tripped
     inputs:
       payload: "object"
       upstream_yields: "object"
+    # Playbook — the CRAFT, fetched on demand. Only `description` rides in the
+    # prompt; `responsibility` is loaded when the model recognises the intent.
+    playbook:
+      - intent: classify_anomaly
+        description: "How to read the telemetry and classify a cost anomaly correctly."
+        responsibility: |
+          1. Pull the telemetry FIRST with read_telemetry(tune_id) —
+             utilisation (avg/p95 CPU), current spec, monthly cost — before
+             you classify. You cannot classify an anomaly you have not read.
+          2. Map utilisation to a type: sustained <5% CPU over the window =
+             wasted_idle; a step change = drift; a burst = spike; a resource
+             with no history = new_resource.
+          3. Read the blast-radius with read_blast_radius(resource_id) so the
+             sre_briefing states how far a change ripples.
+        variables: [tune_id, resource_id]
+      - intent: rightsize_tune
+        description: "How to propose the next-smaller spec and its savings."
+        responsibility: |
+          1. Propose the next-smaller spec off the pricing ladder that still
+             covers observed p95 utilisation with headroom — never below it.
+          2. Compute daily_savings_cents from the current monthly cost and the
+             proposed spec's cost ratio; keep it in INTEGER cents.
+          3. NEVER auto-apply a data-tier resource, a new_resource, or a tune
+             whose blast-radius touches a critical resource — mark is_safe_tune
+             false and let the SRE gate decide. When in doubt, review beats apply.
+        variables: [tune_id]
+    # Day-0 tool surface — reads the seed telemetry / CMDB so the pod runs with
+    # NO connector wired. Each tool announces itself (available:false) when it
+    # has no real source. See agency/tools.py.
+    tools: [read_telemetry, read_blast_radius]
+    # ── To wire real Cost Explorer / CloudWatch / CMDB, uncomment and set the
+    #    URL (each named action under `use:` becomes its own tool, e.g.
+    #    cloudops_get_cost_and_usage). NOTE: the SDK rejects an http mcp block
+    #    with an EMPTY url at load, so this ships COMMENTED — fill the URL,
+    #    then uncomment. ──
+    # mcp:
+    #   - transport: http
+    #     url: "${CLOUDOPS_MCP_URL}"
+    #     token: "${CLOUDOPS_MCP_TOKEN:}"
+    #     use: [get_cost_and_usage, get_metric_statistics, describe_resource]
+    #     name: cloudops
+    #     timeout: 30
     can_call:
-      - agent: "commitments_agent"
+      - agent: commitments_agent
         condition: "calling_agent_response.anomaly_type == 'new_resource'"
-
-      # The prompt's HARD SAFEGUARDS force is_safe_tune=false for
-      # new_resource, so this edge only fires on tunable anomalies.
-      - agent: "cost_tuner_agent"
+      # The safety floor forces is_safe_tune=false for data-tier / new_resource
+      # / critical / over-cap, so this edge only fires on a genuinely safe tune.
+      # A safe tune still goes through the COMPLIANCE veto before it is applied
+      # (Vera clears it -> Tucker; the pre-gate stash carries is_safe_tune so
+      # the finisher's fail-closed re-check authorises the unattended apply).
+      - agent: regulatory_monitor_agent
         condition: "calling_agent_response.is_safe_tune == true and calling_agent_response.data_tier == false"
+      # Risky (but not new_resource, not already exhausted) -> the SRE gate.
+      - agent: sre_human
+        condition: "calling_agent_response.is_safe_tune == false and calling_agent_response.anomaly_type != 'new_resource' and calling_agent_response.reproposal_exhausted == false"
+      # Bounded back-edge terminus: re-proposal exhausted -> WORM audit (never
+      # loop forever — the counter in agency/cost_anomaly_agent.py trips this).
+      - agent: infra_audit_logger_agent
+        condition: "calling_agent_response.reproposal_exhausted == true"
 
-      - agent: "sre_human"
-        condition: "calling_agent_response.anomaly_type != 'new_resource' and calling_agent_response.is_safe_tune == false or calling_agent_response.anomaly_type != 'new_resource' and calling_agent_response.data_tier == true"
-
-  # ────────────────────────────────────────────────────────────
-  # commitments_agent — ONE commitments-analyst ROLE (2.3.x
-  # consolidation: absorbed the former reserved-capacity planner
-  # and commitment-utilisation reviewer).
-  # Responsibility 1 — weekly RI/SP utilisation review (the LLM
-  #   judgment that defines this role).
-  # Responsibility 2 — reserved-capacity / savings-plan forecast.
-  # The backing module (agency/commitments_agent.py) makes this role
-  # SELF-RELIANT and the savings math deterministic:
-  #   @pre_compose  pull the RI + Savings-Plan inventory from the
-  #                 source store (AWS RI/SP, GCP CUDs in prod).
-  #   @chain        THE SAVINGS FLOOR — recompute total_wasted /
-  #                 potential_savings from the inventory; FAIL-CLOSED
-  #                 to zero when no demonstrable waste (→ audit, not SRE).
-  #   @compose      sre_human gets the full forecast; the audit logger
-  #                 gets the zero-savings terminus summary.
-  # Cadence change: the utilisation review moved from Tuesday 10:00
-  # ("0 10 * * 2") to Monday 07:00 — ONE weekly wake (the planner's
-  # original "0 7 * * 1" slot) now carries BOTH responsibilities.
-  # knowledge: kept cloud_commit_catalog (commitments corpus — the
-  # most relevant group; the absorbed planner had no knowledge).
-  # ────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # Rhea — Commitments Analyst (AI). Weekly RI/SP utilisation review + a
+  # reserved-capacity savings forecast. The @chain savings floor recomputes
+  # the wasted total from the inventory and FAILS CLOSED to zero when there is
+  # no demonstrable waste (a zero-savings turn routes to audit, never the SRE).
+  # @compose hands each callee only what it needs.
+  # ─────────────────────────────────────────────────────────────────────────
   commitments_agent:
-    name: "commitments_agent"
-    agent_type: "llm"
-    description: "Commitments analyst — weekly RI/SP utilisation review + reserved-capacity savings forecast"
-    model: "gpt-4o-mini"
+    name: commitments_agent
+    communication_type: chain
+    agent_type: llm
+    model: gpt-4o-mini
     temperature: 0.0
     max_tokens: 1500
-    communication_type: "chain"
-    wake_up: "0 7 * * 1"               # Monday 07:00 — both responsibilities
-
+    description: "Commitments Analyst — weekly RI/SP utilisation review + reserved-capacity savings forecast."
+    wake_up: "0 7 * * 1"             # Monday 07:00 — both responsibilities
+    timezone: "America/New_York"     # governs this agent's cron (UTC otherwise)
+    wake_up_input:
+      trigger: weekly_commit_review
     prompt: |
+      You are Rhea, the Commitments Analyst. One role, two responsibilities —
+      return ONE JSON object with ALL keys. Read the RI + Savings-Plan
+      inventory with read_commitment_inventory() before you total anything.
 
+      Responsibility 1 — RI/SP utilisation review (last 7 days):
+        - underused_commits: list of {commit_id, type, expected_use_pct,
+          actual_use_pct, wasted_cents_per_day}.
+        - overused_workloads: list of {workload, hours_over_commit,
+          cost_at_on_demand_cents_per_day} (on-demand burn a commit could cover).
+        - rebalance_recommendations: list of {action,
+          expected_monthly_savings_cents, rationale, requires_finance_approval}.
+        - total_wasted_cents_per_day: integer.
+        - total_potential_savings_monthly_cents: integer.
+        - executive_summary: 3-sentence overview for FinOps.
+
+      Responsibility 2 — reserved-capacity plan (covers the steady-state baseline):
+        - recommended_commit: object (family / region / amount).
+        - expected_savings_pct: number 0..1.
+        - term_months: exactly 12 or 36 (unsure -> 12).
+
+      DETERMINISTIC RULES:
+        - All *_cents values are INTEGER cents — never floats or dollar strings.
+        - Upstream forecast inputs OVERRIDE your estimates: echo any
+          recommended_commit / expected_savings_pct / term_months in the input
+          UNCHANGED.
+        - FAIL CLOSED: empty / malformed / no basis -> empty lists + empty
+          objects + ZERO for every total (a zero-savings turn routes to audit).
+      Be conservative — a rebalance that loses headroom under a spike costs
+      more than the saving.
 
       OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
-
       {"underused_commits": [], "overused_workloads": [], "rebalance_recommendations": [], "total_wasted_cents_per_day": 0, "total_potential_savings_monthly_cents": 0, "executive_summary": "", "recommended_commit": {}, "expected_savings_pct": 0, "term_months": 0}
-      You are the cloud commitments analyst. One role, two
-      responsibilities — return ONE JSON object with ALL keys.
-
-      Responsibility 1 — RI/SP utilisation review: review
-      reserved-instance + savings-plan utilisation across the cloud
-      accounts for the last 7 days:
-        - underused_commits: list of {commit_id, type, expected_use_pct,
-          actual_use_pct, wasted_cents_per_day}
-        - overused_workloads: list of {workload, hours_over_commit,
-          cost_at_on_demand_cents_per_day}  (on-demand burn that could
-          be commit-covered)
-        - rebalance_recommendations: list of {action, expected_monthly_savings_cents,
-          rationale, requires_finance_approval}
-        - total_wasted_cents_per_day: integer
-        - total_potential_savings_monthly_cents: integer
-        - executive_summary: 3-sentence overview for FinOps
-
-      Responsibility 2 — reserved-capacity plan: propose the commit
-      that covers the steady-state baseline:
-        - recommended_commit: object (family / region / amount)
-        - expected_savings_pct: number (0..1)
-        - term_months: number (12 or 36)
-
-      DETERMINISTIC RULES — apply exactly:
-        - All *_cents values are INTEGER cents — never floats, never
-          dollar strings.
-        - "expected_savings_pct" must be between 0 and 1.
-        - "term_months" must be exactly 12 or 36; when unsure use 12.
-        - "executive_summary" has no leading/trailing whitespace.
-        - Upstream forecast inputs OVERRIDE your estimates: when the
-          input carries recommended_commit / expected_savings_pct /
-          term_months values (including the _test_commit,
-          _test_savings_pct, _test_term_months test keys), echo those
-          values UNCHANGED instead of estimating your own.
-        - FAIL CLOSED: when the input is empty, malformed, or gives no
-          basis for a recommendation, return empty lists / empty
-          objects and ZERO for every savings total — a zero-savings
-          turn routes to the audit log, never to the SRE.
-
-      Be conservative — recommending a rebalance that loses headroom
-      under a traffic spike costs more than the saving.
-
     enforce_yields: true
     enforce_yields_retry: 1
-
-    knowledge:
-      serviceName: "mongo_main"
-      enabled: true
-      groupName: "cloud_commit_catalog"
-
     yields:
       underused_commits: "list"
       overused_workloads: "list"
@@ -375,63 +415,47 @@ agents:
       recommended_commit: "object"
       expected_savings_pct: "number"
       term_months: "number"
-
     inputs:
       trigger: "string"
       upstream_yields: "object"
-
+    tools: [read_commitment_inventory]
     can_call:
-      # Union of both pre-merge edge sets. The planner's unconditional
-      # sre_human edge folds into the OR below — a capacity forecast
-      # with expected_savings_pct > 0 routes to the SRE exactly as the
-      # savings>0 utilisation review always did; a zero-savings turn
-      # lands in the audit log instead of dead-ending.
-      - agent: "sre_human"
+      - agent: sre_human
         condition: "calling_agent_response.total_potential_savings_monthly_cents > 0 or calling_agent_response.expected_savings_pct > 0"
-
-      - agent: "infra_audit_logger_agent"
+      - agent: infra_audit_logger_agent
         condition: "calling_agent_response.total_potential_savings_monthly_cents == 0 and calling_agent_response.expected_savings_pct == 0"
 
-  # ────────────────────────────────────────────────────────────
-  # iac_drift_agent — SELF-RELIANT drift reconciler. The LLM writes
-  # the drift narrative; the backing module
-  # (agency/iac_drift_agent.py) owns two Python jobs:
-  #   @pre_compose  pull the last terraform/pulumi plan's drift set
-  #                 from the source store (the IaC planner in prod).
-  #   @chain        THE BLAST-RADIUS FLOOR — re-scan every drifted
-  #                 resource + attribute against the critical-keyword
-  #                 taxonomy (auth/billing/security/kms/iam/secrets/…)
-  #                 and FORCE critical_drift=true on any hit. The LLM
-  #                 can never clear a critical-resource drift to "clean".
-  # ────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # Dref — IaC Drift Reconciler (AI). Compares intended (Terraform/Pulumi)
+  # state against actual cloud state. The @chain blast-radius floor re-scans
+  # every drifted item against the critical-keyword taxonomy (auth / billing /
+  # security / kms / iam / secrets / vault) and FORCES critical_drift=true on
+  # any hit — the LLM can never clear a critical drift to "clean".
+  # ─────────────────────────────────────────────────────────────────────────
   iac_drift_agent:
-    name: "iac_drift_agent"
-    agent_type: "llm"
-    description: "Compares intended (IaC) vs actual cloud state"
-    model: "gpt-4o-mini"
+    name: iac_drift_agent
+    communication_type: chain
+    agent_type: llm
+    model: gpt-4o-mini
     temperature: 0.0
     max_tokens: 900
-    communication_type: "chain"
+    description: "IaC Drift Reconciler — compares intended (Terraform/Pulumi) vs actual cloud state."
     prompt: |
-      You reconcile intended (Terraform / Pulumi) state against actual
-      cloud state. The input payload carries the drifted resources /
-      attributes detected on the last plan or commit.
+      You are Dref, the IaC Drift Reconciler. Read the last plan's drift set
+      with read_drift_state() (or the payload's drifted items when present) and
+      reconcile intended vs actual.
 
       Rules — apply exactly:
-        - "drift_count": integer — the number of drifted resources /
-          attributes in the input. 0 when none.
-        - "critical_drift": true ONLY if any drifted item touches a
-          critical resource — auth, billing, security, kms, or iam
-          (match those keywords in resource names / attributes,
-          case-insensitive). Otherwise false.
-        - "drift_summary": echo the input's drift items as a list,
-          UNCHANGED. Empty list when none.
+        - drift_count: integer — the number of drifted resources / attributes.
+        - critical_drift: true ONLY if any drifted item touches a critical
+          resource — auth, billing, security, kms, iam (match those keywords
+          in names / attributes, case-insensitive). Otherwise false.
+        - drift_summary: echo the drift items as a list, UNCHANGED. [] when none.
 
-      NOTE — drift_count and critical_drift are RE-DERIVED deterministically
-      by the blast-radius @chain floor in agency/iac_drift_agent.py: it
-      re-scans every drift item against the critical-keyword taxonomy and
-      can only RAISE criticality, never clear it. Return your best estimate;
-      the floor is the authority.
+      NOTE — drift_count and critical_drift are RE-DERIVED deterministically by
+      the blast-radius @chain floor in agency/iac_drift_agent.py: it re-scans
+      every item against the critical taxonomy and can only RAISE criticality,
+      never clear it. Return your best estimate; the floor is the authority.
 
       OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
       {"drift_count": 0, "critical_drift": false, "drift_summary": [], "critical_resources": []}
@@ -441,156 +465,146 @@ agents:
       drift_count: "number"
       critical_drift: "boolean"
       drift_summary: "list"
-      # Re-derived by the blast-radius @chain floor (deterministic):
-      critical_resources: "list"       # which critical keywords matched
+      critical_resources: "list"       # which critical keywords matched (re-derived)
     inputs:
       payload: "object"
+    tools: [read_drift_state]
     can_call:
-      - agent: "sre_human"
+      - agent: sre_human
         condition: "calling_agent_response.critical_drift == true"
-
-      - agent: "infra_audit_logger_agent"
+      - agent: infra_audit_logger_agent
         condition: "calling_agent_response.critical_drift == false"
 
-  cost_tuner_agent:
-    name: "cost_tuner_agent"
-    agent_type: "programmatic"
-    description: "Applies approved tunes (dev: stub; prod: cloud APIs)"
-    communication_type: "execute"
-    yields:
-      applied: "boolean"
-      applied_at_utc: "string"
-      rollback_token: "string"
-    inputs:
-      proposed_spec: "object"
-    can_call:
-      - agent: "infra_audit_logger_agent"
+  # ─────────────────────────────────────────────────────────────────────────
+  # Vera — Compliance Officer (AI). Vetoes tunes that violate data-residency
+  # or encryption-minimum mandates. The @chain veto floor re-runs the
+  # residency + encryption checks from the store and FORCES vetoed=true on any
+  # violation (fail closed: when in doubt, veto). The cross-session veto
+  # ledger lives in agent memory.
+  # ─────────────────────────────────────────────────────────────────────────
+  regulatory_monitor_agent:
+    name: regulatory_monitor_agent
+    communication_type: chain
+    agent_type: llm
+    model: gpt-4o-mini
+    temperature: 0.0
+    max_tokens: 1200
+    description: "Compliance Officer — vetoes cost tunes that violate residency / encryption mandates."
+    memory:
+      cross_session: true              # veto ledger — same tune must always get the same verdict
+      cross_session_limit: 100
+    prompt: |
+      You are Vera, the Compliance Officer on proposed cloud cost tunes. The
+      input carries: tune_id, workload_id, workload_data_classes (pii |
+      customer_data | financial | phi), applicable_frameworks, and
+      proposed_change ({kind, from_value, to_value}). Read the workload's
+      binding mandates with read_workload_governance(workload_id).
 
-  sre_human:
-    name: "sre_human"
-    agent_type: "human"
-    is_human_powered: true
-    description: "SRE — reviews risky tunes + critical drift"
-    human_interface: "default"
-    communication_type: "dual"
-    human_timeout_seconds: 14400
-    # operator_ids: ["you@yourcompany.com"]   # optional — unset routes this
-    #   gate to the SHARED inbox. Only set real operator emails: a
-    #   placeholder assigns tasks to a nonexistent operator and they
-    #   never appear in anyone's inbox.
-    fallback_on_timeout: true
-    fallback_response:
-      decision: "escalate_to_cto"
-      message: "escalate_to_cto"
-      note: "SRE didn't respond — CTO escalation"
+      DATA-RESIDENCY — for kind "region_change", a framework is VIOLATED when
+      its applies_to overlaps workload_data_classes AND the destination region
+      (to_value, ignore any cloud prefix) is NOT allowed:
+        · EU_GDPR       pii, customer_data — eu-west-1, eu-central-1,
+          eu-north-1, eu-south-1, europe-west, europe-central
+        · INDIA_DPDP    pii — ap-south-1, asia-south1
+        · CHINA_PIPL    pii, financial — cn-north-1, cn-northwest-1
+        · RUSSIA_FZ242  pii — ru-central1
+        · CANADA_PIPEDA pii — ca-central-1, northamerica-northeast
+        · AUSTRALIA_PA  pii — ap-southeast-2, australia-southeast1
+
+      ENCRYPTION MINIMUMS — for kind "encryption_change", the strictest
+      applicable framework sets the floor: pci_dss / hipaa / fedramp_mod
+      require at least AES-256-GCM; fedramp_hi requires AES-256-GCM-FIPS140. A
+      to_value below the floor is a violation — set rule_violated to
+      "<required-spec>_required_for_data_classes".
+
+      OUTPUT RULES:
+        - Echo tune_id, workload_id, proposed_change UNCHANGED; data_classes
+          and applicable_frameworks echo the input lists sorted alphabetically.
+        - action = "check" when a proposed_change is present, "skipped" when
+          none (then vetoed=false).
+        - Violation: vetoed true, rule_violated names the framework, veto_id
+          "veto-<tune_id>-<unix-timestamp>", requires_sre_review true.
+        - No violation: vetoed false, rule_violated "", veto_id "",
+          requires_sre_review false.
+        - VETO LEDGER: your memory holds prior vetoes — stay consistent.
+        - When in doubt, VETO — a false veto costs one SRE review; a false
+          clear is a compliance breach.
+
+      OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
+      {"action": "", "tune_id": "", "workload_id": "", "vetoed": false, "rule_violated": "", "veto_id": "", "proposed_change": {}, "data_classes": [], "applicable_frameworks": [], "requires_sre_review": false}
+    enforce_yields: true
+    enforce_yields_retry: 1
     yields:
-      decision: "string"               # approve | reject | escalate_to_cto
-      notes: "string"
-      tune_id: "string"                # identity passthrough → cto_human inputs
-    inputs:
+      action: "string"
       tune_id: "string"
-    can_call:
-      - agent: "cost_tuner_agent"
-        condition: "calling_agent_response.human_message == 'approve' or calling_agent_response.human_message == 'Approve' or calling_agent_response.human_message == 'Approved'"
-
-      - agent: "cto_human"
-        condition: "calling_agent_response.human_message == 'escalate_to_cto'"
-
-      - agent: "infra_audit_logger_agent"
-        condition: "calling_agent_response.human_message == 'reject'"
-
-  cto_human:
-    name: "cto_human"
-    agent_type: "human"
-    is_human_powered: true
-    description: "CTO — major cost / data-tier authority"
-    human_interface: "default"
-    communication_type: "dual"
-    human_timeout_seconds: 28800
-    # operator_ids: ["you@yourcompany.com"]   # optional — unset routes this
-    #   gate to the SHARED inbox. Only set real operator emails: a
-    #   placeholder assigns tasks to a nonexistent operator and they
-    #   never appear in anyone's inbox.
-    fallback_on_timeout: true
-    fallback_response:
-      decision: "halt_for_review"
-      message: "halt_for_review"
-      note: "CTO unavailable — held"
-    yields:
-      decision: "string"
-      directive: "string"
+      workload_id: "string"
+      vetoed: "boolean"
+      rule_violated: "string"
+      veto_id: "string"
+      proposed_change: "object"
+      data_classes: "list"
+      applicable_frameworks: "list"
+      requires_sre_review: "boolean"
     inputs:
+      upstream_yields: "object"
       tune_id: "string"
+      workload_id: "string"
+      workload_data_classes: "list"
+      applicable_frameworks: "list"
+      proposed_change: "object"
+    tools: [read_workload_governance]
     can_call:
-      - agent: "cost_tuner_agent"
-        condition: "calling_agent_response.human_message == 'approve' or calling_agent_response.human_message == 'Approve' or calling_agent_response.human_message == 'Approved'"
+      - agent: sre_human
+        condition: "calling_agent_response.vetoed == true"
+      - agent: cost_tuner_agent
+        condition: "calling_agent_response.vetoed == false"
 
-      - agent: "infra_audit_logger_agent"
-        condition: "calling_agent_response.human_message != 'approve' and calling_agent_response.human_message != 'Approve' and calling_agent_response.human_message != 'Approved'"
-
-  infra_audit_logger_agent:
-    name: "infra_audit_logger_agent"
-    agent_type: "external"
-    description: "Hash-chained WORM — every applied tune + decision"
-    framework: "custom"
-    communication_type: "execute"
-    connector_config:
-      sink_type: "local_file"
-      local_file_path: "./logs/infra_audit.jsonl"
-    yields:
-      audit_event_id: "string"
-      written_at_utc: "string"
-      hash_chain_prev: "string"
-      hash_chain_current: "string"
-    inputs:
-      session_id: "string"
-      payload: "object"
-    can_call: []
-
-  # ────────────────────────────────────────────────────────────
-  # finops_governance_agent — ONE FinOps-governance-analyst ROLE,
-  # connector-backed. The backing module
-  # (agency/finops_governance_agent.py) is the intelligence SHAPER:
-  # it maps the cloud-billing MCP result into the governance yields
-  # and enforces the BUDGET-OVERAGE @chain floor (a forecast overage
-  # at/above store.BUDGET_OVERAGE_FLOOR_PCT FORCES requires_analyst_
-  # action). DEV: the connector is unwired, so the shaper falls back
-  # to the seeded store budgets so budget_check still produces a real
-  # report day-0.
-  #
-  # Your system-of-record for cloud spend and resource inventory is
-  # YOUR cloud billing / cost API — not a template SQLite file:
-  #   · AWS  — Cost Explorer (GetCostAndUsage) + Resource Groups
-  #            Tagging API, exposed via an MCP server (e.g. the AWS
-  #            Cost Explorer MCP server)
-  #   · GCP  — Cloud Billing API / BigQuery billing export via MCP
-  #   · Azure — Cost Management API via MCP
-  # Point CLOUD_BILLING_MCP_URL at that MCP server and set tool_name
-  # to the cost/usage tool it exposes. The agent forwards its inputs
-  # (mode, cost_center, date range, resources …) as tool arguments
-  # and yields the governance report below.
-  #
-  # Responsibility 1 — tag compliance: untagged costs by missing tag
-  #   before the month-end chargeback (from your tag inventory / CMDB).
-  # Responsibility 2 — budget alerts: MTD spend by cost-center,
-  #   month-end forecast, burn trend, overage alerts (from your
-  #   billing API).
-  # ────────────────────────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────────────
+  # Gwen — FinOps Governance Analyst (AI, fanned out with instances). Sweeps
+  # the tag inventory for missing required tags and checks budgets. Each
+  # activation fans into N parallel copies (instances) that each claim a
+  # DISJOINT batch of the resource backlog with an atomic claim tool, so the
+  # backlog is split, never double-counted. The @chain floor recomputes the
+  # ratio (coverage_pct) + the SRE/analyst-action flags from the SUMMED counts
+  # AFTER the merge (a per-copy ratio would be wrong) and enforces the
+  # budget-overage threshold.
+  # ─────────────────────────────────────────────────────────────────────────
   finops_governance_agent:
-    name: "finops_governance_agent"
-    agent_type: "programmatic"
-    description: "FinOps governance via your cloud billing/cost API (AWS Cost Explorer / GCP Cloud Billing / Azure Cost Management over MCP) — tag compliance + budget/forecast/overage alerts"
-    communication_type: "chain"
-    integration: "mcp"
-    connector_config:
-      transport: "http"
-      url: "${CLOUD_BILLING_MCP_URL:}"          # your cloud-billing MCP server
-      auth_token: "${CLOUD_BILLING_MCP_TOKEN:}"
-      tool_name: "get_cost_and_usage"           # the cost/usage tool your MCP server exposes
-      timeout: 60.0
-    # wake_up: "0 8 * * *"             # daily 08:00 governance sweep —
-    # enable after wiring your cloud-billing connector — a cron sweeping
-    # an unwired connector just fills the logs with errors
+    name: finops_governance_agent
+    communication_type: chain
+    agent_type: llm
+    model: gpt-4o-mini
+    temperature: 0.0
+    max_tokens: 1200
+    max_tool_calls_per_message: 10   # claim + per-batch tag reads
+    description: "FinOps Governance Analyst — tag-compliance sweep (fanned out) + budget/forecast/overage alerts."
+    instances: 2                     # 2 parallel copies per activation
+    instances_handoff: last          # combine deterministically, then route once
+    wake_up: "0 8 * * *"             # daily tag/budget sweep (one cron line; instances fan it out)
+    timezone: "America/New_York"     # governs this agent's cron (UTC otherwise)
+    wake_up_input:
+      mode: tag_sweep
+    prompt: |
+      You are Gwen, a FinOps Governance Analyst. You are ONE of several
+      parallel copies working the same sweep — claim your OWN disjoint batch
+      of resources with claim_resource_batch() (never work a resource another
+      copy claimed), then report ONLY on the batch you claimed.
+
+      For a tag sweep (mode = tag_sweep): for each claimed resource check the
+      required tags (cost_center, env, owner). Report:
+        - total_resources: how many YOU claimed.
+        - fully_compliant: how many of YOURS carry every required tag.
+        - missing_tag_breakdown: {tag: count} across YOUR batch.
+        - untagged_cost_cents_per_month: monthly cost of YOUR non-compliant ones.
+      For a budget check (mode = budget): read the cost-center's MTD + budget
+      and report mtd_cents, monthly_budget_cents, forecast_month_end_cents.
+
+      Leave coverage_pct, requires_sre_action, requires_analyst_action at 0 /
+      false — the @chain floor recomputes them from the COMBINED counts after
+      all copies merge (a per-copy ratio would be wrong).
+
+      OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
+      {"mode": "", "total_resources": 0, "fully_compliant": 0, "coverage_pct": 0, "missing_tag_breakdown": {}, "untagged_cost_cents_per_month": 0, "requires_sre_action": false, "compliance_briefing": "", "cost_center": "", "mtd_cents": 0, "monthly_budget_cents": 0, "forecast_month_end_cents": 0, "forecast_overage_pct": 0, "requires_analyst_action": false, "budget_briefing": ""}
     yields:
       mode: "string"
       total_resources: "number"
@@ -605,142 +619,140 @@ agents:
       monthly_budget_cents: "number"
       forecast_month_end_cents: "number"
       forecast_overage_pct: "number"
-      burn_trend_pct: "number"
-      anomaly_days_count: "number"
       requires_analyst_action: "boolean"
       budget_briefing: "string"
     inputs:
       mode: "string"
-      resources: "list"
-      resource_id: "string"
-      cloud: "string"
-      kind: "string"
-      tags: "object"
-      monthly_cost_cents: "number"
       cost_center: "string"
-      date: "string"
-      cents: "number"
-      monthly_budget_cents: "number"
-    can_call: []
-
-    auto_store_response: true
-    auto_store_yields: true
-
-  # ────────────────────────────────────────────────────────────
-  # regulatory_monitor_agent — SELF-RELIANT compliance officer with a
-  # DETERMINISTIC VETO floor. The LLM writes the compliance narrative
-  # + cross-session veto ledger; the backing module
-  # (agency/regulatory_monitor_agent.py) owns:
-  #   @pre_compose  pull the workload's data-classes + applicable
-  #                 frameworks + current region from the governance
-  #                 registry (the source store; the governance service
-  #                 in prod).
-  #   @chain        THE VETO FLOOR — re-run the residency + encryption
-  #                 checks; a deterministic violation FORCES vetoed=true
-  #                 regardless of what the LLM scored. The LLM can raise
-  #                 a veto but never clear a violating change.
-  # The residency/encryption taxonomy is in the prompt (for the
-  # narrative) AND in the store (for the deterministic floor).
-  # ────────────────────────────────────────────────────────────
-  regulatory_monitor_agent:
-    name: "regulatory_monitor_agent"
-    agent_type: "llm"
-    description: "Vetoes cost tunes that violate active compliance constraints (data residency, encryption minimums)"
-    model: "gpt-4o-mini"
-    temperature: 0.0
-    max_tokens: 1200
-    communication_type: "chain"
-    memory:
-      cross_session: true              # veto ledger — replaces the old SQLite tune_vetoes table
-      cross_session_limit: 100
-
-    prompt: |
-      You are the compliance veto check on proposed cloud cost tunes.
-      The input carries: tune_id, workload_id, workload_data_classes
-      (pii | customer_data | financial | phi), applicable_frameworks,
-      and proposed_change ({kind, from_value, to_value}).
-
-      DATA-RESIDENCY RULES — for kind "region_change", a framework is
-      VIOLATED when its applies_to overlaps workload_data_classes AND
-      the destination region (to_value, ignore any cloud prefix) is
-      NOT in its allowed regions:
-        · EU_GDPR       applies_to pii, customer_data — allowed:
-          eu-west-1, eu-central-1, eu-north-1, eu-south-1,
-          europe-west, europe-central
-        · INDIA_DPDP    applies_to pii — allowed: ap-south-1, asia-south1
-        · CHINA_PIPL    applies_to pii, financial — allowed:
-          cn-north-1, cn-northwest-1
-        · RUSSIA_FZ242  applies_to pii — allowed: ru-central1
-        · CANADA_PIPEDA applies_to pii — allowed: ca-central-1,
-          northamerica-northeast
-        · AUSTRALIA_PA  applies_to pii — allowed: ap-southeast-2,
-          australia-southeast1
-
-      ENCRYPTION MINIMUMS — for kind "encryption_change", the
-      strictest applicable framework sets the floor: pci_dss / hipaa /
-      fedramp_mod require at least AES-256-GCM; fedramp_hi requires
-      AES-256-GCM-FIPS140. A to_value below the floor (anything not
-      AES-256 class) is a violation — set "rule_violated" to
-      "<required-spec>_required_for_data_classes".
-
-      OUTPUT RULES — apply exactly:
-        - Echo "tune_id", "workload_id", "proposed_change" UNCHANGED
-          from the input; "data_classes" and "applicable_frameworks"
-          echo the input lists sorted alphabetically.
-        - "action" is "check" when a proposed_change is present,
-          "skipped" when the input has none (then vetoed=false).
-        - On violation: "vetoed" true, "rule_violated" names the
-          framework, "veto_id" is "veto-<tune_id>-<unix-timestamp>",
-          "requires_sre_review" true.
-        - No violation: "vetoed" false, "rule_violated" "", "veto_id"
-          "", "requires_sre_review" false.
-        - VETO LEDGER: your memory holds previously recorded vetoes —
-          compare this tune against them and stay consistent (the same
-          tune_id + change must always produce the same verdict);
-          state each new veto clearly so it lands in memory for later
-          turns.
-        - When in doubt, VETO — a false veto costs one SRE review; a
-          false clear is a compliance breach.
-
-      OUTPUT CONTRACT — respond with ONLY valid JSON containing exactly these keys:
-      {"action": "", "tune_id": "", "workload_id": "", "vetoed": false, "rule_violated": "", "veto_id": "", "proposed_change": {}, "data_classes": [], "applicable_frameworks": [], "requires_sre_review": false}
-    enforce_yields: true
-    enforce_yields_retry: 1
-
-    yields:
-      action: "string"
-      tune_id: "string"
-      workload_id: "string"
-      vetoed: "boolean"
-      rule_violated: "string"
-      veto_id: "string"
-      proposed_change: "object"
-      data_classes: "list"
-      applicable_frameworks: "list"
-      requires_sre_review: "boolean"
-
-    inputs:
-      upstream_yields: "object"
-      tune_id: "string"
-      workload_id: "string"
-      workload_data_classes: "list"      # pii | customer_data | financial | phi
-      applicable_frameworks: "list"      # EU_GDPR | INDIA_DPDP | etc.
-      proposed_change: "object"          # {kind: region_change|encryption_change, from_value, to_value}
-
+      mtd_cents: "number"
+      forecast_month_end_cents: "number"
+    tools: [claim_resource_batch, read_tag_inventory, read_budget]
     can_call:
-      # Vetoed tune → SRE review (override path). NOTE: on an
-      # override-approve, cost_tuner recovers the tune payload from
-      # the session stash (written upstream by cost_anomaly_agent) or
-      # from the operator's human_data; a direct compliance_veto_check
-      # entry with neither makes cost_tuner FAIL CLOSED (refuses to
-      # apply an unrecoverable change) — by design.
-      - agent: "sre_human"
-        condition: "calling_agent_response.vetoed == true"
+      - agent: sre_human
+        condition: "calling_agent_response.requires_sre_action == true or calling_agent_response.requires_analyst_action == true"
+      - agent: infra_audit_logger_agent
+        condition: "calling_agent_response.requires_sre_action == false and calling_agent_response.requires_analyst_action == false"
 
-      # Clean tune → continue to existing cost_tuner (synchronous
-      # path — proposed_change flows through upstream yields).
-      - agent: "cost_tuner_agent"
-        condition: "calling_agent_response.vetoed == false"
+  # ─────────────────────────────────────────────────────────────────────────
+  # Tucker — Cloud Change Actuator (programmatic FINISHER). Sits BEHIND the
+  # SRE/CTO gate and the auto-apply floor. It never decides safety itself — it
+  # re-checks that a change is authorised (a human approve TOKEN, allow-list +
+  # deny-list, unknown => fail closed; OR a deterministically-floored safe
+  # tune), enforces invariants a human can't waive (a recoverable spec, no
+  # double-apply), renders the applied-change record to ./out, DELETES it on a
+  # blocked floor, and records the ledger. See agency/cost_tuner_agent.py.
+  # ─────────────────────────────────────────────────────────────────────────
+  cost_tuner_agent:
+    name: cost_tuner_agent
+    communication_type: execute
+    agent_type: programmatic
+    description: "Cloud Change Actuator — applies an authorised tune (dev: stub), fail-closed, idempotent, ledgered."
+    yields:
+      applied: "boolean"
+      applied_at_utc: "string"
+      rollback_token: "string"
+      tune_id: "string"
+      status: "string"              # applied | blocked | noop
+      block_reasons: "array"
+      artifact_path: "string"
+    inputs:
+      proposed_spec: "object"
+      upstream_yields: "object"
+    can_call:
+      - agent: infra_audit_logger_agent
+        condition: "always"
 
-    auto_store_response: true
-    auto_store_yields: true
+  # ─────────────────────────────────────────────────────────────────────────
+  # Human members — first-class, reached in the channel they already live in.
+  # Every gate DEFAULT-DENIES on timeout (fallback -> held_for_review ->
+  # audit; the Manager SUPERVISOR then escalates to the CTO). `dual` belongs
+  # on the human/webhook boundary agent ONLY — never wire one dual agent to
+  # another (dual->dual is unbounded ping-pong; the SDK warns). That is why
+  # sre_human does NOT call cto_human directly: an SRE stall is escalated by
+  # the Manager (manager.escalation.targets), not by a hardcoded human->human
+  # wire.
+  # ─────────────────────────────────────────────────────────────────────────
+  sre_human:
+    name: sre_human
+    agent_type: human
+    human_interface: webhook
+    communication_type: dual
+    human_timeout_seconds: 14400     # 4 hours to review a risky tune
+    description: "Site Reliability Engineer — reviews risky tunes + critical drift; approve / reject / hold."
+    # operator_ids: ["you@yourcompany.com"]   # unset -> SHARED inbox. Only set
+    #   real operator emails: a placeholder assigns tasks to a nonexistent
+    #   operator and they never appear in anyone's inbox.
+    fallback_on_timeout: true
+    fallback_response:
+      human_decision: held
+      human_message: held_for_review
+    webhook_config:
+      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
+      outbound_headers: {Content-Type: "application/json"}
+      outbound_timeout: 30
+      max_retries: 1
+      retry_delay: 2
+    yields:
+      human_message: "string"        # approve | reject | held_for_review
+    inputs:
+      tune: "object"
+    can_call:
+      - agent: cost_tuner_agent
+        condition: "calling_agent_response.human_message == 'approve' or calling_agent_response.human_message == 'Approve' or calling_agent_response.human_message == 'Approved' or calling_agent_response.human_message == 'approved'"
+      # Bounded back-edge: a rejected tune goes back to Axel for a more
+      # conservative re-proposal (the counter in cost_anomaly bounds it).
+      - agent: cost_anomaly_agent
+        condition: "calling_agent_response.human_message == 'reject' or calling_agent_response.human_message == 'Reject' or calling_agent_response.human_message == 'Rejected' or calling_agent_response.human_message == 'rejected'"
+      # On silence/hold the fallback delivers held_for_review — record it and
+      # let the Manager escalate to the CTO.
+      - agent: infra_audit_logger_agent
+        condition: "calling_agent_response.human_message == 'held_for_review'"
+
+  cto_human:
+    name: cto_human
+    agent_type: human
+    human_interface: webhook
+    communication_type: dual
+    human_timeout_seconds: 28800     # 8 hours — final authority on major/data-tier changes
+    description: "Chief Technology Officer — accountable owner; approves or holds major-cost / data-tier changes."
+    # operator_ids: ["you@yourcompany.com"]   # unset -> SHARED inbox (see above).
+    fallback_on_timeout: true
+    fallback_response:
+      human_decision: held
+      human_message: held_for_review
+    webhook_config:
+      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
+      outbound_headers: {Content-Type: "application/json"}
+      outbound_timeout: 30
+    yields:
+      human_message: "string"        # approve | reject | held_for_review
+    inputs:
+      tune: "object"
+    can_call:
+      - agent: cost_tuner_agent
+        condition: "calling_agent_response.human_message == 'approve' or calling_agent_response.human_message == 'Approve' or calling_agent_response.human_message == 'Approved' or calling_agent_response.human_message == 'approved'"
+      - agent: infra_audit_logger_agent
+        condition: "calling_agent_response.human_message == 'held_for_review' or calling_agent_response.human_message == 'reject' or calling_agent_response.human_message == 'rejected' or calling_agent_response.human_message == 'Reject' or calling_agent_response.human_message == 'Rejected'"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # WORM audit sink — hash-chained, append-only, the terminus of every path.
+  # Registered in main.py via sdk.intelligence("infra_audit_logger_agent").
+  # ─────────────────────────────────────────────────────────────────────────
+  infra_audit_logger_agent:
+    name: infra_audit_logger_agent
+    agent_type: external
+    framework: custom
+    communication_type: execute
+    description: "WORM audit — hash-chains every applied tune, decision, veto, and held gate. Terminus."
+    connector_config:
+      sink_type: local_file
+      local_file_path: "./logs/infra_audit.jsonl"
+    yields:
+      audit_event_id: "string"
+      written_at_utc: "string"
+      hash_chain_prev: "string"
+      hash_chain_current: "string"
+    inputs:
+      session_id: "string"
+      payload: "object"
+    can_call: []

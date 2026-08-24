@@ -1,24 +1,27 @@
-"""finops_governance_agent — FinOps connector SHAPER + budget-overage floor.
+"""finops_governance_agent — Gwen, the FinOps governance analyst (fanned out).
 
-finops_governance_agent is a programmatic `integration: mcp` agent: its
-results come from YOUR cloud billing/cost API (AWS Cost Explorer / GCP
-Cloud Billing / Azure Cost Management) over an MCP server. This module is
-the name-matched INTELLIGENCE SHAPER — it maps the raw connector result
-into the declared yields and enforces the one floor the LLM/connector
-must not waive:
+Gwen is an `llm` agent run with `instances: N`: each activation fans into N
+parallel copies that each claim a DISJOINT batch of the tag-sweep backlog
+(claim_resource_batch, an atomic claim tool) and report on THEIR batch. The
+SDK combines the copies (`instances_handoff: last`): counts SUM, lists concat.
 
-@chain        enforce_budget_floor — THE DETERMINISTIC BUDGET-OVERAGE
-              THRESHOLD. A forecast month-end overage at/above
-              store.BUDGET_OVERAGE_FLOOR_PCT is a human-action overage,
-              not a soft alert — requires_analyst_action is FORCED true.
-              Reproducible arithmetic over the budget the LLM/connector
-              cannot soften.
+This module owns the two things Python must — and it runs on the COMBINED
+result AFTER the merge (the @chain reshape receives the combined payload +
+the `_instances` pool), because a ratio computed per-copy would be wrong when
+the copies' numbers sum:
 
-DEV (no connector): when CLOUD_BILLING_MCP_URL is unset the connector
-returns nothing, so this shaper falls back to the seeded store budgets so
-the budget_check entry still produces a real governance report day-0.
-PROD: the MCP connector result flows in as `connector_result` and the
-shaper maps + floors it.
+@chain  enforce_coverage_floor — recompute coverage_pct from the SUMMED
+        total_resources / fully_compliant, and force requires_sre_action when
+        coverage falls below store.COVERAGE_FLOOR_PCT. (Never trust a per-copy
+        ratio: 0.9 + 0.9 must not become 1.8 — recompute from the counts.)
+
+@chain  enforce_budget_floor — THE DETERMINISTIC BUDGET-OVERAGE THRESHOLD. A
+        forecast month-end overage at/above store.BUDGET_OVERAGE_FLOOR_PCT is
+        a human-action overage, not a soft alert — requires_analyst_action is
+        FORCED true. Reproducible arithmetic the LLM cannot soften.
+
+DEV (no connector): the claim/read tools fall back to the seeded store so the
+sweep produces a real governance report day-0.
 """
 from __future__ import annotations
 
@@ -54,6 +57,27 @@ def _pick(data: dict[str, Any], key: str, default: Any = None) -> Any:
     return default
 
 
+# ── The coverage floor as a PURE helper (unit-testable) ───────────────
+def apply_coverage_floor(result: dict[str, Any]) -> dict[str, Any]:
+    """Recompute coverage_pct from the (merged) counts and force
+    requires_sre_action below the floor. Pure — no per-copy ratio trusted."""
+    result = dict(result) if isinstance(result, dict) else {}
+    total = int(result.get("total_resources") or 0)
+    compliant = int(result.get("fully_compliant") or 0)
+    coverage = round(compliant / total, 4) if total > 0 else 0.0
+    result["coverage_pct"] = coverage
+    below = total > 0 and coverage < store.COVERAGE_FLOOR_PCT
+    result["requires_sre_action"] = bool(result.get("requires_sre_action")) or below
+    if below and not result.get("compliance_briefing"):
+        result["compliance_briefing"] = (
+            f"TAG GAP: {compliant}/{total} resources compliant "
+            f"({coverage:.0%} < {store.COVERAGE_FLOOR_PCT:.0%}) — SRE action required.")
+    if below:
+        logger.warning(f"[finops] COVERAGE FLOOR forced SRE action — "
+                       f"{coverage:.0%} of {total} resources compliant")
+    return result
+
+
 # ── The budget floor as a PURE helper (unit-testable) ─────────────────
 def apply_budget_floor(result: dict[str, Any],
                        cost_center: str,
@@ -72,19 +96,21 @@ def apply_budget_floor(result: dict[str, Any],
         result["budget_briefing"] = (
             f"OVERAGE: {cost_center} forecast {forecast_cents}c vs budget "
             f"{over['monthly_budget_cents']}c "
-            f"(+{over['forecast_overage_pct']:.0%}) — analyst action required."
-        )
+            f"(+{over['forecast_overage_pct']:.0%}) — analyst action required.")
     if forced:
-        logger.warning(
-            f"[finops] BUDGET FLOOR forced analyst action — {cost_center} "
-            f"overage +{over['forecast_overage_pct']:.0%}"
-        )
+        logger.warning(f"[finops] BUDGET FLOOR forced analyst action — {cost_center} "
+                       f"overage +{over['forecast_overage_pct']:.0%}")
     return result
 
 
+async def enforce_coverage_floor(result: Any, ctx: Any) -> Any:
+    """@chain wrapper — recompute the ratio on the COMBINED result post-merge."""
+    return apply_coverage_floor(_parse(result))
+
+
 async def enforce_budget_floor(result: Any, ctx: Any) -> Any:
-    """@chain wrapper — apply the budget-overage threshold floor over the
-    shaped report. Carries the cost-center + forecast via private keys."""
+    """@chain wrapper — apply the budget-overage threshold. Carries the
+    cost-center + forecast via private keys set by the body."""
     result = _parse(result)
     cost_center = str(result.pop("_budget_cost_center", "") or result.get("cost_center") or "")
     forecast = int(result.pop("_budget_forecast_cents", 0) or result.get("forecast_month_end_cents") or 0)
@@ -93,18 +119,16 @@ async def enforce_budget_floor(result: Any, ctx: Any) -> Any:
     return apply_budget_floor(result, cost_center, forecast)
 
 
-@chain(enforce_budget_floor)
-async def finops_governance_agent(connector_result: Any, input_data: Any, context: Any) -> Any:
-    """Map the cloud-billing MCP result into the governance yields; the
-    chain enforces the budget-overage floor. DEV: the connector is unwired,
-    so fall back to the seeded store budgets."""
-    raw = _parse(connector_result)
+@chain(enforce_coverage_floor, enforce_budget_floor)
+async def finops_governance_agent(llm_response: Any, input_data: Any, context: Any) -> Any:
+    """Map one copy's batch report into the governance yields; the chain
+    recomputes the ratio + enforces the budget floor on the merged result."""
+    raw = _parse(llm_response)
     input_data = input_data if isinstance(input_data, dict) else {}
-    mode = str(_pick(input_data, "mode", "") or raw.get("mode") or "budget")
+    mode = str(_pick(input_data, "mode", "") or raw.get("mode") or "tag_sweep")
     cost_center = str(_pick(input_data, "cost_center", "") or raw.get("cost_center") or "")
 
-    # Forecast: prefer the connector's number; else the input; else a dev
-    # estimate of MTD × 2 from the input so the floor has something real.
+    # Forecast: the model's number, else the input, else a dev estimate (MTD×2).
     forecast = int(raw.get("forecast_month_end_cents") or 0)
     if not forecast:
         mtd = int(_pick(input_data, "mtd_cents", 0) or 0)
@@ -114,7 +138,7 @@ async def finops_governance_agent(connector_result: Any, input_data: Any, contex
         "mode": mode,
         "total_resources": int(raw.get("total_resources") or 0),
         "fully_compliant": int(raw.get("fully_compliant") or 0),
-        "coverage_pct": float(raw.get("coverage_pct") or 0),
+        "coverage_pct": 0.0,                       # recomputed post-merge by the floor
         "missing_tag_breakdown": raw.get("missing_tag_breakdown") or {},
         "untagged_cost_cents_per_month": int(raw.get("untagged_cost_cents_per_month") or 0),
         "requires_sre_action": bool(raw.get("requires_sre_action") or False),
@@ -124,12 +148,10 @@ async def finops_governance_agent(connector_result: Any, input_data: Any, contex
         "monthly_budget_cents": int(raw.get("monthly_budget_cents") or 0),
         "forecast_month_end_cents": forecast,
         "forecast_overage_pct": float(raw.get("forecast_overage_pct") or 0),
-        "burn_trend_pct": float(raw.get("burn_trend_pct") or 0),
-        "anomaly_days_count": int(raw.get("anomaly_days_count") or 0),
         "requires_analyst_action": bool(raw.get("requires_analyst_action") or False),
         "budget_briefing": str(raw.get("budget_briefing") or ""),
-        # Private carry → consumed by enforce_budget_floor.
-        "_budget_cost_center": cost_center,
-        "_budget_forecast_cents": forecast,
+        # Private carry → consumed by enforce_budget_floor (only bites in budget mode).
+        "_budget_cost_center": cost_center if mode == "budget" else "",
+        "_budget_forecast_cents": forecast if mode == "budget" else 0,
     }
     return result

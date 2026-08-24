@@ -1,57 +1,60 @@
-# infra-cost-ops — Infra Cost Ops
+# infra-cost-ops — Infra Cost-Ops Pod
 
-Continuous cloud-cost optimization as a department of agents. Cost
-anomalies and right-sizing are classified-and-proposed in one LLM call,
-risky tunes are gated by an SRE (then a CTO), safe tunes auto-apply, a
-weekly commitments analyst reviews reserved-instance / savings-plan
-utilisation, an IaC-drift reconciler watches intended-vs-actual state, a
-compliance monitor vetoes residency/encryption-violating tunes, and a
-FinOps-governance connector surfaces tag gaps and budget overages — every
-applied change landing in a hash-chained WORM audit.
+Continuous cloud-cost tuning as a **pod** — a coordinator, four analysts, a
+compliance officer, a fail-closed actuator, two human gates, and a supervisor.
+An anomaly is opened as a case, classified and turned into a right-sizing tune
+(blast-radius scored), compliance-vetoed, gated by an SRE (then the CTO) on
+anything risky, applied by a fail-closed actuator, and hash-chained into a WORM
+audit. Commitments, IaC-drift and FinOps-governance analysts run alongside the
+tune chain. It runs **day-0 against a seeded dev store — no connector required**.
 
 ---
 
 ## 1. The story
 
-**Maya, an SRE at a mid-size SaaS company**, never opens this system — it
-runs without her until a decision needs her judgment. At 02:14 the cloud
-cost-explorer fires an anomaly webhook: an `m5.4xlarge` running at 4% CPU
-for nine days. `cost_anomaly_agent` classifies it in one call — type
-`wasted_idle`, daily impact 41,000¢, production-tier `false`, and in the
-same JSON proposes the tune: `m5.4xlarge → m5.large`, `is_safe_tune: true`,
-`data_tier: false`. Because the proposal is safe and not data-tier, the
-chain routes straight to `cost_tuner_agent`, which applies the resize
-against the cloud API (dev: a stub), returns a `rollback_token`, and writes
-the change to the WORM audit. Maya wakes up to a resolved ticket and an
-audit line, not a 2 a.m. page.
+**Maya, an SRE at a mid-size SaaS company**, never opens this system — it runs
+without her until a decision needs her judgment. At 02:14 the cloud
+cost-explorer fires an anomaly webhook. **Cyra**, the Cost-Case Coordinator,
+opens the case and hands it to **Axel**, the Cost Analyst. Axel — a
+*super-agent* that plans, reads its telemetry tools, and verifies — classifies
+it in one pass: type `wasted_idle`, 41,000¢/day, production-tier `false`, and
+proposes the tune `m5.4xlarge → m5.large`, `is_safe_tune: true`. Because the
+deterministic **safety floor** re-derives it as safe and non-data-tier, the tune
+flows through **Vera** (compliance veto — a plain rightsize clears instantly) to
+**Tucker**, the actuator, which re-checks authorisation, applies the resize
+against the cloud API (dev: a stub), returns a `rollback_token`, renders the
+applied-change record, and writes the WORM audit. Maya wakes to a resolved
+ticket, not a 2 a.m. page.
 
-The next morning a second anomaly lands — an `rds` instance flagged
-`drift`. This one is `data_tier: true`, so the prompt's HARD SAFEGUARDS
-force `is_safe_tune: false` and the chain routes to **Maya** (`sre_human`).
-`cost_anomaly_agent` already stashed the full tune payload keyed by session
-*before* the gate, so when Maya clicks **Approve** in her inbox, the SDK
-resumes `cost_tuner_agent` with only the human-response meta — and the
-tuner recovers the proposed spec from that stash and applies it. Had she
-not responded within four hours, the gate's default-deny fallback escalates
-to **the CTO** (`cto_human`); a CTO no-show holds the change for review.
-Nothing irreversible happens without a human, and nothing is lost in the
-hand-off.
+The next morning a second anomaly lands — an `rds` instance. It is a database,
+so Axel's **safety floor forces `is_safe_tune: false`** (a database is never
+auto-tuned, whatever the model scored) and the chain routes to **Maya**
+(`sre_human`). Axel already stashed the floored tune payload keyed by session
+*before* the gate, so when Maya clicks **Approve**, Tucker recovers the spec
+from that stash and applies it. If Maya rejects, it goes back to Axel for a more
+conservative re-proposal — **bounded**: after two rejects the loop terminates
+into the audit sink, never forever. If Maya never answers, the gate **default-
+denies** (`held_for_review` → audit) and the **Manager supervisor** escalates to
+the **CTO**. Nothing irreversible happens without a human, and nothing is lost
+across a hand-off.
 
 ## 2. Why it works in an organization
 
-Cloud waste is continuous and granular — idle instances, over-provisioned
-pods, under-used reservations, untagged spend, drift between Terraform and
-reality. No human watches all of it, so it compounds. This agency turns
-each waste signal into a *classified, costed, and (where safe)
-auto-remediated* action, while reserving human attention for exactly the
-changes that carry risk: production data tiers, SLA-affecting resizes,
-critical-resource drift (auth / billing / security / kms / iam), and
-compliance-sensitive region/encryption moves. The ROI is twofold:
-**recovered spend** (right-sizing + reservation rebalancing run weekly, not
-quarterly) and **avoided incidents** (a default-deny SRE→CTO gate and a
-fail-closed actuator mean an unrecoverable or unreviewed change is never
-applied). Every applied tune is hash-chained into a WORM log, so the
-finance and security teams get an audit trail for free.
+Cloud waste is continuous and granular — idle instances, over-provisioned pods,
+under-used reservations, untagged spend, drift between Terraform and reality. No
+human watches all of it, so it compounds. This **pod** turns each waste signal
+into a *classified, costed, compliance-checked, and (where safe) auto-remediated*
+action, while reserving human attention for exactly the changes that carry risk:
+production data tiers, SLA-affecting resizes, critical-resource drift
+(auth / billing / security / kms / iam), and residency/encryption-sensitive
+moves. The discipline is the reference house style: **agents produce, humans
+decide, systems record — and silence never advances anything.** The ROI is
+twofold: **recovered spend** (right-sizing + reservation rebalancing run weekly,
+not quarterly) and **avoided incidents** (a default-deny SRE→CTO gate, a
+deterministic safety floor the LLM can't waive, and a fail-closed actuator mean
+an unrecoverable, unreviewed, or non-compliant change is never applied). Every
+applied tune is hash-chained into a WORM log, so finance and security get an
+audit trail for free.
 
 ## 3. Configuration (three tiers)
 
@@ -65,84 +68,64 @@ finance and security teams get an audit trail for free.
 ### Tier 2 — Host prerequisites + adapters
 | Var | Required | Purpose |
 |---|---|---|
-| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | optional | Session store + auto-storage. Defaults to `localhost:6379`, no auth (`docker compose up redis -d`). |
-| `ANTHROPIC_API_KEY` | optional | Only if you enable the built-in Claude summarizer for narration. |
-| `PAGER_WEBHOOK` | optional | PagerDuty Events v2 endpoint for the manager's `webhook` escalation target. Defaults to the public enqueue URL. |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | optional | Session store. Defaults to `localhost:6379`, no auth (`docker compose up redis -d`). |
+| `HITL_OUTBOUND_URL` | optional | Where the SRE / CTO gates POST review requests (your inbox / Slack bridge / on-call webhook). Defaults to a local stub. |
+| `PAGER_WEBHOOK` | optional | PagerDuty Events v2 endpoint for the Manager's `webhook` escalation target. |
 
 ### Tier 3 — Connectors (wire when you adopt that capability)
 | Var | Required | Purpose |
 |---|---|---|
-| `CLOUD_BILLING_MCP_URL` | optional until used | MCP server fronting your cloud billing/cost API (AWS Cost Explorer / GCP Cloud Billing / Azure Cost Management). Consumed by `finops_governance_agent`. After wiring, re-enable that agent's `wake_up: "0 8 * * *"` cron in `configs/config.yaml`. |
-| `CLOUD_BILLING_MCP_TOKEN` | optional | Auth token for the billing MCP server. |
-| `SLACK_INFRA_CHANNEL` | optional | Channel id for the manager's `channel`/`slack` escalation target (`message_template`). |
-| `SLACK_BOT_TOKEN` / `SLACK_SIGNING_SECRET` | optional | These belong to a `channels: {slack: {...}}` block (a `ChannelConfig`) and are **not** auto-consumed by the escalation target — the `provider: slack` escalation target only reads `channel_id` + `message_template`. Add a `channels:` block if you want the SDK's Slack ingress/egress adapter. |
+| `CLOUDOPS_MCP_URL` / `CLOUDOPS_MCP_TOKEN` | optional until used | MCP server fronting Cost Explorer + CloudWatch + CMDB. Wires `cost_anomaly_agent`'s **commented `mcp:` block** — fill the URL, then uncomment it in `configs/config.yaml`. |
+| `CLOUD_BILLING_MCP_URL` / `CLOUD_BILLING_MCP_TOKEN` | optional until used | Cloud billing/cost API for `finops_governance_agent`'s tag/budget reads (dev: the seeded store). |
+| `SLACK_INFRA_CHANNEL` | optional | Channel id for the Manager's `slack` escalation target. `SLACK_BOT_TOKEN`/`SLACK_SIGNING_SECRET` belong to a `channels:` block (not auto-consumed by the escalation target). |
 
 ```bash
 cp env .env && pip install -r requirements.txt
-python validate_config.py        # pre-flight
+python validate_config.py        # pre-flight — "all checks pass"
 python main.py                   # API at http://127.0.0.1:18820/docs
 ```
 
-The connector env vars (`CLOUD_BILLING_MCP_URL` / `…_TOKEN`) are optional
-day-0 — a **seeded dev store** (`agency/_shared/store.py`) stands in for
-your cloud telemetry, commitment inventory, IaC drift state, workload
-data-classes, and budgets so the full chain runs out of the box. It ships
-a wasted-idle EC2 anomaly, a data-tier RDS anomaly, an under-used m5 RI, a
-critical-resource VPC drift item, and a GDPR-bound workload. Every read is
-the contract a production connector must satisfy; swap the body for the
-real call and the agents are unchanged.
+The connector vars are optional day-0 — a **seeded dev store**
+(`agency/_shared/store.py`) stands in for your cloud telemetry, commitment
+inventory, IaC drift state, workload data-classes, tag backlog, and budgets, and
+each day-0 tool (`agency/tools.py`) **announces itself** (`available:false`) when
+it has no real source rather than faking a read. Every read is the contract a
+production connector must satisfy; swap the body for the real call and the pod
+is unchanged.
 
 ### Drive it — a cost anomaly end-to-end
 
 ```bash
-# The seeded wasted_idle anomaly: 4% CPU for 9 days → the safety floor
-# clears it (non-data-tier, low blast) → cost_tuner auto-applies → audit.
-curl -X POST http://127.0.0.1:18820/api/mesh/call \
+# The seeded wasted_idle anomaly: the safety floor clears it (non-data-tier,
+# low blast) -> compliance clears a plain rightsize -> Tucker auto-applies -> audit.
+curl -X POST http://127.0.0.1:18820/api/mesh/request \
   -H "Content-Type: application/json" \
   -d '{"entry_point":"cost_anomaly_webhook",
-       "input_data":{"payload":{"tune_id":"tune-2026-0612-ec2-idle",
-                     "cloud":"aws","resource_kind":"ec2"}}}'
+       "data":{"payload":{"tune_id":"tune-2026-0612-ec2-idle",
+               "cloud":"aws","resource_kind":"ec2"}}}'
 ```
 
-`cost_anomaly_agent` pulls the telemetry + blast-radius via `@pre_compose`,
-the `@chain` safety floor re-derives `data_tier`/`is_safe_tune`, and a safe
-non-data-tier tune routes straight to `cost_tuner_agent` (a `rollback_token`
-+ a hash-chained audit line). Swap the `tune_id` for
-`tune-2026-0613-rds-overprov` and the floor forces the data-tier RDS resize
-to **`sre_human`** instead — the LLM cannot wave it through.
-
-```bash
-# A GDPR-bound workload moved out of the EU — the @chain veto floor blocks it.
-curl -X POST http://127.0.0.1:18820/api/mesh/call \
-  -H "Content-Type: application/json" \
-  -d '{"entry_point":"compliance_veto_check",
-       "input_data":{"tune_id":"tune-mv-1","workload_id":"orders-primary-db",
-                     "proposed_change":{"kind":"region_change","to_value":"us-east-1"}}}'
-```
-
-```bash
-# All four scenarios end-to-end (no server needed):
-python examples/run_examples.py
-```
+Swap the `tune_id` for `tune-2026-0613-rds-overprov` and the safety floor forces
+the data-tier RDS resize to **`sre_human`** instead — the LLM cannot wave it
+through. `python examples/run_examples.py` runs the bundled scenarios end-to-end.
 
 ## 4. Agents
 
-| Agent | Role (job title) | Responsibilities | Can perform |
+| Agent | Role (human/job title) | Responsibilities | Can perform |
 |---|---|---|---|
-| `cost_anomaly_agent` | Cloud cost analyst | Classifies an anomaly (`spike`/`drift`/`idle`/`new_resource`/`wasted_idle`) **and** proposes the right-sizing tune in one call. `@pre_compose` pulls the telemetry + CMDB blast-radius; a deterministic `@chain` **safety-gate floor** re-derives `data_tier`/`blast_radius` and forces `is_safe_tune=false` on any data-tier / new_resource / critical-resource / over-cap tune (the LLM can only be *downgraded*); a second `@chain` stashes the floored payload pre-gate so an approval can resume the tuner. `llm`, `enforce_yields`, knowledge `cost_patterns`. | → `commitments_agent` (new_resource) · → `cost_tuner_agent` (safe & non-data-tier) · → `sre_human` (unsafe or data-tier) |
-| `commitments_agent` | Cloud commitments analyst | Weekly RI/savings-plan utilisation review + reserved-capacity forecast. `@pre_compose` pulls the RI/SP inventory; a deterministic `@chain` **savings floor** recomputes wasted spend and fails closed (no basis → zero → audit, never the SRE); `@compose` sends the SRE the full forecast and the audit logger the terminus summary. `llm`, `enforce_yields`, cron `Mon 07:00`, knowledge `cloud_commit_catalog`. | → `sre_human` (savings > 0) · → `infra_audit_logger_agent` (zero savings) |
-| `iac_drift_agent` | Infrastructure drift reconciler | Compares intended (Terraform/Pulumi) vs actual cloud state. `@pre_compose` pulls the last plan's drift set; a deterministic `@chain` **blast-radius floor** re-scans every item against the critical taxonomy (auth/billing/security/kms/iam/secrets) and forces `critical_drift=true` on any hit (the LLM can't clear it). `llm`, `enforce_yields`. | → `sre_human` (critical drift) · → `infra_audit_logger_agent` (clean) |
-| `regulatory_monitor_agent` | Compliance officer (cloud) | Vetoes tunes violating data-residency / encryption-minimum mandates. `@pre_compose` pulls the workload's binding frameworks; a deterministic `@chain` **veto floor** re-runs the residency/encryption check and forces `vetoed=true` on any violation (fail-closed — the LLM can raise a veto, never clear one); the cross-session veto ledger lives in agent memory. `llm`, `enforce_yields`, `cross_session` memory. | → `sre_human` (vetoed) · → `cost_tuner_agent` (clean) |
-| `cost_tuner_agent` | Cloud change actuator | Applies approved tunes against the cloud API (dev: stub). Fail-closed — refuses to apply when no tune payload is recoverable; **idempotent** — a re-fired approval for an already-applied `tune_id` is a no-op; returns a rollback token. `programmatic`, side-effecting module. | → `infra_audit_logger_agent` |
-| `sre_human` | Site Reliability Engineer | Reviews risky tunes + critical drift; default-deny on a 4 h timeout (escalates to CTO). `human`, `fallback_on_timeout`. | → `cost_tuner_agent` (approve) · → `cto_human` (escalate) · → `infra_audit_logger_agent` (reject) |
-| `cto_human` | Chief Technology Officer | Final authority on major-cost / data-tier changes; holds for review on an 8 h timeout. `human`, `fallback_on_timeout`. | → `cost_tuner_agent` (approve) · → `infra_audit_logger_agent` (otherwise) |
-| `finops_governance_agent` | FinOps governance analyst | Tag-compliance sweeps + budget/forecast/overage alerts via your cloud billing/cost API over MCP. The backing module is the connector **shaper** (maps the raw MCP result into the yields, dev-store fallback when unwired) and enforces a deterministic `@chain` **budget-overage floor** (a forecast overage ≥ the threshold forces analyst action). `programmatic`, `integration: mcp`. | (terminal connector — results stored) |
-| `infra_audit_logger_agent` | Audit & compliance recorder | Append-only hash-chained WORM record of every applied tune + decision. `external` (`framework: custom`), registered via `mesh.intelligence()` in `main.py`. | (audit terminus) |
+| `fin_coordinator_agent` (Cyra) | Cost-Case Coordinator | Opens each tune case, orchestrates the pod, keeps live status, single point of contact. Never classifies/tunes/approves. `llm`, pure YAML. | → `cost_anomaly_agent` (classify) · → `cto_human` (escalate) |
+| `cost_anomaly_agent` (Axel) | Cloud Cost Analyst | Classifies the anomaly **and** proposes the right-sizing tune in one call. `super_agent` (plan/execute/verify); reads telemetry + CMDB via dev-store tools; a `playbook` carries the craft on demand; the deterministic `@chain` **safety floor** re-derives `data_tier`/`blast_radius`/`is_safe_tune` and can only DOWNGRADE the LLM; a second `@chain` stashes the floored payload pre-gate. Daily wake (timezoned). | → `commitments_agent` (new_resource) · → `regulatory_monitor_agent` (safe & non-data-tier) · → `sre_human` (risky) · → audit (re-proposal exhausted) |
+| `commitments_agent` (Rhea) | Cloud Commitments Analyst | Weekly RI/SP utilisation review + reserved-capacity forecast. `@chain` **savings floor** recomputes wasted spend and fails closed (no basis → zero → audit, never the SRE); `@compose` gives each callee only what it needs. `llm`, weekly wake (timezoned). | → `sre_human` (savings > 0) · → `infra_audit_logger_agent` (zero) |
+| `iac_drift_agent` (Dref) | Infrastructure Drift Reconciler | Compares intended (Terraform/Pulumi) vs actual state. `@chain` **blast-radius floor** re-scans every item against the critical taxonomy (auth/billing/security/kms/iam) and forces `critical_drift=true` on any hit. `llm`. | → `sre_human` (critical) · → `infra_audit_logger_agent` (clean) |
+| `regulatory_monitor_agent` (Vera) | Compliance Officer (cloud) | Vetoes tunes violating residency / encryption mandates. `@chain` **veto floor** re-runs the checks and forces `vetoed=true` on any violation (fail-closed — raise a veto, never clear one); cross-session veto ledger in agent memory. `llm`. | → `sre_human` (vetoed) · → `cost_tuner_agent` (clean) |
+| `finops_governance_agent` (Gwen) | FinOps Governance Analyst | Tag-compliance sweep (fanned out with `instances: 2` + an **atomic claim tool** so copies split the backlog) + budget/forecast/overage alerts. `@chain` recomputes the ratio from the SUMMED counts post-merge and enforces the **budget-overage floor**. `llm`, daily wake (timezoned). | → `sre_human` (action needed) · → `infra_audit_logger_agent` (clean) |
+| `cost_tuner_agent` (Tucker) | Cloud Change Actuator (finisher) | Applies an authorised tune against the cloud API (dev: stub). Re-checks authorisation (approve TOKEN allow/deny-lists, unknown → **fail closed**; OR a floored-safe tune), renders the change record to `./out`, **deletes it on a blocked floor**, and is **idempotent** (a re-fired approval is a no-op). `programmatic`. | → `infra_audit_logger_agent` (always) |
+| `sre_human` (Maya) | Site Reliability Engineer | Reviews risky tunes + critical drift; approve / reject / hold. Default-deny on a 4 h timeout → audit; the Manager escalates to the CTO. `human`, `dual`, webhook. | → `cost_tuner_agent` (approve) · → `cost_anomaly_agent` (reject, bounded) · → `infra_audit_logger_agent` (held) |
+| `cto_human` | Chief Technology Officer | Accountable owner — final authority on major-cost / data-tier changes; holds for review on an 8 h timeout. `human`, `dual`, webhook. | → `cost_tuner_agent` (approve) · → `infra_audit_logger_agent` (otherwise) |
+| `infra_audit_logger_agent` | Audit & Compliance Recorder | Append-only hash-chained WORM record of every applied tune + decision + held gate. `external` (`framework: custom`), registered via `mesh.intelligence()` in `main.py`. | (audit terminus) |
 
-The **manager** (`gpt-4o-mini`, learning router) supervises the mesh,
-intervenes on its escalation rules (production data-tier touches,
-cost-increasing or SLA-risking changes, critical-resource drift), and
-escalates through three targets: `cto_human`, the PagerDuty webhook, and
-the Slack channel.
+The **Manager** (`gpt-4o-mini`, `routing: static`) is the **supervisor**, not a
+router — it watches every hand-off and escalates stalls, contract violations, and
+repeated errors to the CTO (plus a PagerDuty webhook and a Slack channel).
 
-See `PRD.md` for the architecture, flow diagram, and per-agent spec.
+See `PRD.md` for the flow diagram, controls, and per-agent spec.

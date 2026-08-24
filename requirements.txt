@@ -1,6 +1,18 @@
-leafmesh>=2.4.0
-
-# Scheduler (enables wake_up cron in YAML)
-apscheduler>=3.10.0
+# infra-cost-ops — Infra Cost-Ops Pod
+#
+# Core LeafMesh installs everywhere (all LLM providers included) and runs the
+# pod DAY-0 against the seeded dev store — no connector needed.
+leafmesh>=2.4.131
 python-dotenv>=1.0.0
 PyYAML>=6.0
+apscheduler>=3.10.0      # required for the daily/weekly wake_up crons to fire
+
+# ── Optional, per what you wire ──────────────────────────────────────────────
+# To connect real Cost Explorer / CloudWatch / CMDB / cloud-billing over MCP
+# (the commented mcp block + finops connector):
+#     pip install 'leafmesh[mcp]>=2.4.131'
+#
+# For every channel/listener/knowledge/storage backend at once:
+#     pip install 'leafmesh[all]>=2.4.131'
+#   ⚠️ leafmesh[all] does NOT install on Python 3.12+ (it pulls `cchardet`,
+#      which has no wheel). On 3.12+ add only the specific extras you need.

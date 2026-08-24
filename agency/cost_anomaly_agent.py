@@ -1,13 +1,9 @@
-"""cost_anomaly_agent — SELF-RELIANT cost analyst + the SAFETY GATE floor.
+"""cost_anomaly_agent — Axel, the cost analyst + the SAFETY GATE floor.
 
-The LLM (configs/config.yaml) classifies the anomaly + drafts the
-right-sizing narrative; this module owns the three things Python must:
-
-@pre_compose  load_telemetry — pull the cost/usage telemetry, the current
-              spec, and the resource's tags / blast-radius from the source
-              store (Cost Explorer + CloudWatch + the CMDB in prod) so the
-              LLM reasons over real numbers instead of a spoon-fed payload.
-              Self-reliant context pull.
+The LLM (configs/config.yaml, wrapped in super_agent) classifies the anomaly
++ drafts the right-sizing tune, reading the telemetry through its tools
+(read_telemetry / read_blast_radius — dev store day-0). This module owns the
+things Python must:
 
 @chain        enforce_safety_floor — THE DETERMINISTIC AUTO-APPLY GATE.
               The auto-apply-safe vs risky/data-tier → SRE decision is
@@ -31,6 +27,11 @@ right-sizing narrative; this module owns the three things Python must:
               approval with only the human-response meta fields, so the
               tune payload must be stashed here for cost_tuner to recover.
 
+Bounded back-edge: when the SRE REJECTS a tune, sre_human routes back here
+for a more conservative re-proposal. The body bumps a per-session counter and
+trips `reproposal_exhausted` at the cap, so the re-propose loop terminates
+into the WORM audit instead of looping forever (Rule 3).
+
 Everything else (classification narrative, sre_briefing, cited_signals)
 stays prompt-driven and SDK yields-filled.
 """
@@ -39,12 +40,36 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from leafmesh import LeafMeshLogger, chain, pre_compose
+from leafmesh import LeafMeshLogger, chain
 
 from agency._shared import store
-from agency._shared.session_stash import resolve_session_id, stash_put
+from agency._shared.session_stash import bump, resolve_session_id, stash_get, stash_put
 
 logger = LeafMeshLogger(__name__)
+
+# Max SRE rejects before the re-propose loop terminates into the audit sink.
+_REPROPOSAL_CAP = 2
+
+_REJECT_TOKENS = frozenset({"reject", "rejected"})
+
+
+def _is_reject_reentry(input_data: dict[str, Any]) -> bool:
+    """True when this turn is a re-entry from an SRE rejection (bounded back-edge)."""
+    if not isinstance(input_data, dict):
+        return False
+    sources = [input_data]
+    up = input_data.get("upstream_yields")
+    if isinstance(up, dict):
+        sources.extend(v for v in up.values() if isinstance(v, dict))
+    hd = input_data.get("human_data")
+    if isinstance(hd, dict):
+        sources.append(hd)
+    for src in sources:
+        for key in ("human_message", "human_decision", "decision", "message"):
+            val = src.get(key)
+            if isinstance(val, str) and val.strip().lower() in _REJECT_TOKENS:
+                return True
+    return False
 
 
 def _parse(resp: Any) -> dict[str, Any]:
@@ -223,40 +248,46 @@ async def stash_tune(result: Any, ctx: Any) -> Any:
     return result
 
 
-@pre_compose(context_processor=load_telemetry)
 @chain(enforce_safety_floor, stash_tune)
 async def cost_anomaly_agent(llm_response: Any, input_data: Any, context: Any) -> Any:
-    """Surface the LLM's classification; the chain enforces the safety
-    floor + stashes for HITL recovery. The body resolves the resource
-    kind/id + blast (it has input_data) and hands them to the floor via
-    private carry keys."""
+    """Surface the LLM's classification; the chain enforces the safety floor +
+    stashes for HITL recovery. The body resolves the resource kind/id + blast
+    from the store (the model already read them via its tools; the floor
+    re-reads independently) and bounds the SRE-reject re-proposal loop."""
     result = _parse(llm_response)
     input_data = input_data if isinstance(input_data, dict) else {}
-    pctx = _ctx(context)
+    session_id = resolve_session_id(input_data, context)
 
-    # Prefer the @pre_compose context; fall back to the store on a direct
-    # call so the floor is self-sufficient (gl_coding idiom).
-    tel = pctx.get("telemetry")
-    resource_id = pctx.get("resource_id") or ""
-    blast = pctx.get("blast_radius") or {}
-    if not tel:
-        tel = store.telemetry(str(result.get("tune_id")
-                                  or _pick(input_data, "tune_id", "") or ""))
-    if not resource_id:
-        resource_id = str(_pick(input_data, "resource_id", "")
-                          or tel.get("resource_id") or "")
-    if not blast and resource_id:
-        blast = store.blast_radius(resource_id)
+    # tune_id — from the LLM / input / upstream, else recover from the stash
+    # (an SRE-reject re-entry re-delivers only human meta; the tune_id it
+    # needs to re-read telemetry lives in the pre-gate stash).
+    tune_id = str(result.get("tune_id") or _pick(input_data, "tune_id", "") or "")
+    if not tune_id:
+        tune_id = str((stash_get(session_id) or {}).get("tune_id") or "")
+    result["tune_id"] = tune_id
 
-    resource_kind = str(_pick(input_data, "resource_kind", "")
-                        or tel.get("resource_kind") or "")
+    # Resolve the telemetry / resource / blast from the store so the floor is
+    # self-sufficient (the model pulled these via its tools for the narrative;
+    # the deterministic floor re-derives them here — A7: verify independently).
+    tel = store.telemetry(tune_id)
+    resource_id = str(_pick(input_data, "resource_id", "") or tel.get("resource_id") or "")
+    blast = store.blast_radius(resource_id) if resource_id else {}
+    resource_kind = str(_pick(input_data, "resource_kind", "") or tel.get("resource_kind") or "")
+
+    # Bounded back-edge: count SRE rejections; trip the terminal flag at the cap.
+    if _is_reject_reentry(input_data):
+        count = bump(session_id, "reproposal_count")
+        result["reproposal_exhausted"] = count > _REPROPOSAL_CAP
+        if result["reproposal_exhausted"]:
+            logger.warning(f"[cost_anomaly] re-proposal EXHAUSTED for tune={tune_id or '?'} "
+                           f"(session={session_id or '?'}, rejects={count}) — routing to audit.")
+    else:
+        result.setdefault("reproposal_exhausted", False)
 
     # Private carry → consumed + stripped by enforce_safety_floor / stash_tune.
     result["_floor_kind"] = resource_kind
     result["_floor_resource_id"] = resource_id
     result["_floor_blast"] = blast
     result["_floor_telemetry"] = tel
-    # The session_id lives in input_data/context, which the @chain stash fn
-    # does not receive — resolve it here and carry it to stash_tune.
-    result["_floor_session_id"] = resolve_session_id(input_data, context)
+    result["_floor_session_id"] = session_id
     return result
