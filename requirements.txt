@@ -2,7 +2,7 @@
 #
 # Core LeafMesh installs everywhere (all LLM providers included) and runs the
 # pod DAY-0 against the seeded dev store — no connector needed.
-leafmesh>=2.4.131
+leafmesh>=2.4.486
 python-dotenv>=1.0.0
 PyYAML>=6.0
 apscheduler>=3.10.0      # required for the daily/weekly wake_up crons to fire

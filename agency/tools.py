@@ -8,12 +8,14 @@ and no seed, it returns `available: false` and says why — never a synthetic
 success that looks like a real read (doctrine A4/A5).
 
 `claim_resource_batch` is the ATOMIC claim tool for Gwen's fanned-out tag
-sweep (`instances: N`): each parallel copy claims a DISJOINT batch of the
+sweep (`scaling.copies.count: N`): each parallel copy claims a DISJOINT batch of the
 backlog under a lock, so the copies never double-count the same resource.
 
 To go live, wire the Cost Explorer / CloudWatch / CMDB mcp block in
 config.yaml (each named action becomes its own tool); these dev tools are
-the fallback contract the real connector must satisfy.
+the fallback contract the real connector must satisfy. Whether a real cloud
+connector is wired is read from the vault (record 'cloudops_mcp'), never
+from .env.
 """
 from __future__ import annotations
 
@@ -23,21 +25,23 @@ from leafmesh import global_tool, LeafMeshLogger
 
 try:
     from agency._shared import store
+    from agency._shared.wiring import vault_record_exists
 except ImportError:  # pragma: no cover — direct-run fallback
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from agency._shared import store  # type: ignore
+    from agency._shared.wiring import vault_record_exists  # type: ignore
 
 logger = LeafMeshLogger(__name__)
 
 
-def _connector_wired() -> bool:
-    """True if a real cloud connector is configured (an mcp URL is set)."""
-    return bool(os.getenv("CLOUDOPS_MCP_URL") or os.getenv("CLOUD_BILLING_MCP_URL"))
+async def _connector_wired() -> bool:
+    """True if a real cloud connector is wired: the vault holds 'cloudops_mcp'."""
+    return await vault_record_exists("cloudops_mcp")
 
 
 @global_tool(category="costops")
-def read_telemetry(tune_id: str) -> dict:
+async def read_telemetry(tune_id: str) -> dict:
     """Read the cost/usage telemetry for an anomaly: utilisation (avg/p95 CPU),
     current spec, monthly cost, resource kind. Dev: the seed store; prod: Cost
     Explorer + CloudWatch. Announces available:false when there is nothing to
@@ -48,9 +52,11 @@ def read_telemetry(tune_id: str) -> dict:
     """
     tel = store.telemetry(str(tune_id).strip())
     if not tel:
-        if _connector_wired():
+        if await _connector_wired():
             return {"available": False, "reason": "connector wired but returned nothing for this tune_id"}
-        return {"available": False, "reason": f"no seed telemetry for {tune_id!r}; wire CLOUDOPS_MCP_URL"}
+        return {"available": False,
+                "reason": f"no seed telemetry for {tune_id!r}; wire the cloudops_mcp vault "
+                          f"connection and the mcp block on cost_anomaly_agent"}
     logger.info(f"read_telemetry tune={tune_id} kind={tel.get('resource_kind')}")
     return {"available": True, **tel}
 
@@ -143,7 +149,7 @@ def read_budget(cost_center: str) -> dict:
 @global_tool(category="costops")
 def claim_resource_batch(batch_size: int = 5) -> dict:
     """ATOMICALLY claim up to `batch_size` resources off the tag-sweep backlog
-    for THIS copy to work — each fanned-out copy (instances: N) gets a DISJOINT
+    for THIS copy to work — each fanned-out copy (copies.count: N) gets a DISJOINT
     batch, so the backlog is split, never double-counted. Dev: a lock-guarded
     pop from the seed backlog; prod: an atomic `LPOP count` / `UPDATE ... SKIP
     LOCKED RETURNING` against your queue.

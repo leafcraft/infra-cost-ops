@@ -8,9 +8,10 @@
 # IaC-drift and FinOps-governance analysts run alongside the tune chain.
 #
 # The pod is a TEAM, not a pipeline. Every wire is conditional; every
-# hand-off is a finished contract; every human gate default-denies on
-# silence; the finisher (cost_tuner) produces the real artifact and fails
-# closed; the WORM sink is the terminus. Cloud systems (Cost Explorer /
+# hand-off is a finished contract; nothing risky is applied on silence (an
+# unanswered card closes and the ticket records it); the finisher
+# (cost_tuner) produces the real artifact and fails closed; the WORM sink is
+# the terminus. Cloud systems (Cost Explorer /
 # CloudWatch / RI-SP / Terraform / CMDB / Budgets) are TOOLS inside agents,
 # never members.
 #
@@ -24,21 +25,16 @@ environment: development
 debug: true
 log_level: INFO
 
-persistence:
-  backend: redis
-  redis:
-    host: "${REDIS_HOST:localhost}"
-    port: ${REDIS_PORT:6379}
-    db: 0
-    password: "${REDIS_PASSWORD:}"
-
 auto_discover:
   directory: ./agency
   pattern: '*_agent.py'
 
-# The Manager is the SUPERVISOR — it watches every hand-off and escalates
-# stalls / contract violations / repeated errors to the accountable human
-# (the CTO). It is NOT a router in the middle of the team (routing: static).
+# The Manager is the SUPERVISOR. It escalates to the accountable human (the
+# CTO) only on errors: a non-retryable error (auth / bad request / bad config)
+# the first time it happens, 5 failed agents in one session, or restarts used
+# up. Contract violations (yields not met) alert people; they do not escalate.
+# An unanswered SRE card is not escalated: it closes and the ticket records
+# it. It is NOT a router in the middle of the team (routing: static).
 manager:
   model: gpt-4o-mini
   domain: generic
@@ -48,37 +44,41 @@ manager:
     right-sizing tune, blast-radius scored) -> Vera (compliance veto) -> the
     SRE gate on anything risky -> Tucker (apply the tune, fail-closed) ->
     the WORM audit. Rhea reviews commitments weekly, Dref reconciles IaC
-    drift, Gwen sweeps tags + budgets. Escalate to the CTO when: a tune
-    loops on re-proposal past its bound, the SRE gate times out, a
-    data-tier / critical-resource / compliance-vetoed change is in play, or
-    any agent hands off a malformed artifact. Silence never advances a tune.
+    drift, Gwen sweeps tags + budgets. Data-tier, critical-resource and
+    compliance-vetoed changes already reach the SRE through the agents' own
+    routes, and a re-proposal loop ends in the audit log at its bound. You
+    step in on errors: an agent that keeps failing goes to the CTO. Silence
+    never advances a tune.
   routing:
     mode: static
   escalation:
     targets:
       - type: human_agent
         agent: cto_human
-      - type: webhook
-        url: "${PAGER_WEBHOOK:https://events.pagerduty.com/v2/enqueue}"
-        method: POST
-        headers:
-          Content-Type: application/json
-        payload_template:
-          incident_id: "{{tune_id}}"
-          severity: "{{severity}}"
-          message: "{{message}}"
-          session_id: "{{session_id}}"
-      - type: channel
-        provider: slack
-        channel_id: "${SLACK_INFRA_CHANNEL:}"
-        message_template: "[infra-cost] {{message}} — tune {{tune_id}}"
+      # Webhook escalation (e.g. PagerDuty): create the vault connection
+      # 'escalation_webhook' (an "Add custom" record on the Infrastructure
+      # page, service type 'Outbound webhook'), then uncomment — here before the
+      # first start, in Studio's YAML editor after it (applies live, no restart).
+      # - type: webhook
+        # connection: escalation_webhook   # vault connection holds the URL + headers
+        # method: POST
+        # payload_template:
+          # incident_id: "{{tune_id}}"
+          # severity: "{{severity}}"
+          # message: "{{message}}"
+          # session_id: "{{session_id}}"
+      # Slack escalation: connect Slack on Infrastructure → Messaging → Slack
+      # (the bot token + signing secret live there, never in .env), give a
+      # human seat a `channels: {slack: {connection: <name>}}` block, then
+      # uncomment this target with your channel id — here before the first
+      # start, in Studio's YAML editor after it.
+      # - type: channel
+        # provider: slack
+        # channel_id: "C0123456789"        # your #infra-cost channel id
+        # message_template: "[infra-cost] {{message}} — tune {{tune_id}}"
     auto_escalate:
       max_retries: 3
       max_errors_per_session: 5
-      timeout_threshold: 2
-
-mesh:
-  call_timeout: 150
 
 # 2.4.131 runtime block — cost_anomaly runs a super-agent (plan/execute/
 # verify) over a tune, which can run long. Everything else stays default
@@ -86,6 +86,7 @@ mesh:
 # `timeouts` block is REJECTED by SDK <= 2.4.130 — it must land WITH the
 # 2.4.131 floor, never before.
 timeouts:
+  mesh_call_default_timeout_s: 150
   llm_hard_timeout_s: 300
 
 # The payload shape a cost anomaly carries (documentation for callers).
@@ -276,7 +277,7 @@ agents:
       daily_impact_cents: "number"
       scope: "string"
       production_tier: "boolean"
-      cited_signals: "list"
+      cited_signals: { type: array, items: string }
       sre_briefing: "string"
       current_spec: "object"
       proposed_spec: "object"
@@ -321,15 +322,17 @@ agents:
     # NO connector wired. Each tool announces itself (available:false) when it
     # has no real source. See agency/tools.py.
     tools: [read_telemetry, read_blast_radius]
-    # ── To wire real Cost Explorer / CloudWatch / CMDB, uncomment and set the
-    #    URL (each named action under `use:` becomes its own tool, e.g.
-    #    cloudops_get_cost_and_usage). NOTE: the SDK rejects an http mcp block
-    #    with an EMPTY url at load, so this ships COMMENTED — fill the URL,
-    #    then uncomment. ──
+    # ── To wire real Cost Explorer / CloudWatch / CMDB: create the vault
+    #    connection 'cloudops_mcp' on Infrastructure → Integrations → MCP (an MCP
+    #    server's connection: its address + token), then uncomment — here before
+    #    the first start, in Studio's YAML editor after it (applies live, no
+    #    restart). Each named
+    #    action under `use:` becomes its own tool, e.g.
+    #    cloudops_get_cost_and_usage. The address and token live only in the
+    #    vault — never write url:/token: here. ──
     # mcp:
-    #   - transport: http
-    #     url: "${CLOUDOPS_MCP_URL}"
-    #     token: "${CLOUDOPS_MCP_TOKEN:}"
+    #   - connection: cloudops_mcp
+    #     transport: http
     #     use: [get_cost_and_usage, get_metric_statistics, describe_resource]
     #     name: cloudops
     #     timeout: 30
@@ -406,9 +409,9 @@ agents:
     enforce_yields: true
     enforce_yields_retry: 1
     yields:
-      underused_commits: "list"
-      overused_workloads: "list"
-      rebalance_recommendations: "list"
+      underused_commits: { type: array, items: { type: object } }          # recomputed in code
+      overused_workloads: { type: array, items: { type: object } }
+      rebalance_recommendations: { type: array, items: { type: object } }
       total_wasted_cents_per_day: "number"
       total_potential_savings_monthly_cents: "number"
       executive_summary: "string"
@@ -464,8 +467,8 @@ agents:
     yields:
       drift_count: "number"
       critical_drift: "boolean"
-      drift_summary: "list"
-      critical_resources: "list"       # which critical keywords matched (re-derived)
+      drift_summary: { type: array, items: { type: object } }   # the drift items, echoed
+      critical_resources: { type: array, items: string }        # which critical keywords matched (re-derived)
     inputs:
       payload: "object"
     tools: [read_drift_state]
@@ -542,8 +545,8 @@ agents:
       rule_violated: "string"
       veto_id: "string"
       proposed_change: "object"
-      data_classes: "list"
-      applicable_frameworks: "list"
+      data_classes: { type: array, items: string }
+      applicable_frameworks: { type: array, items: string }
       requires_sre_review: "boolean"
     inputs:
       upstream_yields: "object"
@@ -560,9 +563,9 @@ agents:
         condition: "calling_agent_response.vetoed == false"
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Gwen — FinOps Governance Analyst (AI, fanned out with instances). Sweeps
+  # Gwen — FinOps Governance Analyst (AI, fanned out with scaling.copies). Sweeps
   # the tag inventory for missing required tags and checks budgets. Each
-  # activation fans into N parallel copies (instances) that each claim a
+  # activation fans into N parallel copies (copies.count) that each claim a
   # DISJOINT batch of the resource backlog with an atomic claim tool, so the
   # backlog is split, never double-counted. The @chain floor recomputes the
   # ratio (coverage_pct) + the SRE/analyst-action flags from the SUMMED counts
@@ -578,9 +581,12 @@ agents:
     max_tokens: 1200
     max_tool_calls_per_message: 10   # claim + per-batch tag reads
     description: "FinOps Governance Analyst — tag-compliance sweep (fanned out) + budget/forecast/overage alerts."
-    instances: 2                     # 2 parallel copies per activation
-    instances_handoff: last          # combine deterministically, then route once
-    wake_up: "0 8 * * *"             # daily tag/budget sweep (one cron line; instances fan it out)
+    scaling:                      # 2.4.484 (was instances / instances_handoff)
+      copies:
+        mode: fixed
+        count: 2                     # 2 parallel copies per activation
+        handoff: last          # combine deterministically, then route once
+    wake_up: "0 8 * * *"             # daily tag/budget sweep (one cron line; copies fan it out)
     timezone: "America/New_York"     # governs this agent's cron (UTC otherwise)
     wake_up_input:
       mode: tag_sweep
@@ -644,9 +650,9 @@ agents:
   # ─────────────────────────────────────────────────────────────────────────
   cost_tuner_agent:
     name: cost_tuner_agent
-    communication_type: execute
+    communication_type: chain
     agent_type: programmatic
-    description: "Cloud Change Actuator — applies an authorised tune (dev: stub), fail-closed, idempotent, ledgered."
+    description: "Cloud Change Actuator — applies an authorised tune (dev: ledger record, no cloud call), fail-closed, idempotent, ledgered."
     yields:
       applied: "boolean"
       applied_at_utc: "string"
@@ -663,19 +669,20 @@ agents:
         condition: "always"
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Human members — first-class, reached in the channel they already live in.
-  # Every gate DEFAULT-DENIES on timeout (fallback -> held_for_review ->
-  # audit; the Manager SUPERVISOR then escalates to the CTO). `dual` belongs
-  # on the human/webhook boundary agent ONLY — never wire one dual agent to
-  # another (dual->dual is unbounded ping-pong; the SDK warns). That is why
-  # sre_human does NOT call cto_human directly: an SRE stall is escalated by
-  # the Manager (manager.escalation.targets), not by a hardcoded human->human
-  # wire.
+  # Human members — first-class, answering in Studio's Inbox. Nothing risky
+  # is applied on silence. If nobody answers within a seat's
+  # human_timeout_seconds, the request waits no longer: its Inbox card closes
+  # and the ticket records that no reply came. Nobody is chased
+  # automatically. fallback_on_timeout / fallback_response (held_for_review ->
+  # audit) are kept as the declared intent; on leafmesh 2.4.486 a dual seat's
+  # timeout routes nothing. `dual` belongs on the human/webhook boundary agent
+  # ONLY — never wire one dual agent to another (dual->dual is unbounded
+  # ping-pong; the SDK warns), so sre_human does NOT call cto_human.
   # ─────────────────────────────────────────────────────────────────────────
   sre_human:
     name: sre_human
     agent_type: human
-    human_interface: webhook
+    human_interface: "default"   # the Inbox (no vault connection needed)
     communication_type: dual
     human_timeout_seconds: 14400     # 4 hours to review a risky tune
     description: "Site Reliability Engineer — reviews risky tunes + critical drift; approve / reject / hold."
@@ -686,14 +693,17 @@ agents:
     fallback_response:
       human_decision: held
       human_message: held_for_review
-    webhook_config:
-      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
-      outbound_headers: {Content-Type: "application/json"}
-      outbound_timeout: 30
-      max_retries: 1
-      retry_delay: 2
+    human_prompt_template: |
+      A cloud change needs your review: a risky right-size (data tier, wide
+      blast radius or production), a compliance veto, critical IaC drift, a
+      commitment recommendation, or a tag / budget action.
+      For a right-size: reply "approve" to have it applied, "reject" to send it
+      back for a more conservative proposal (at most twice), or "hold".
+      For anything else: reply "noted" or "hold" — it is recorded in the audit
+      log; drift is fixed with a Terraform apply and commitments are bought by
+      FinOps in the cloud console, not by this pod.
     yields:
-      human_message: "string"        # approve | reject | held_for_review
+      human_message: "string"        # approve | reject | hold | noted | held_for_review
     inputs:
       tune: "object"
     can_call:
@@ -703,15 +713,14 @@ agents:
       # conservative re-proposal (the counter in cost_anomaly bounds it).
       - agent: cost_anomaly_agent
         condition: "calling_agent_response.human_message == 'reject' or calling_agent_response.human_message == 'Reject' or calling_agent_response.human_message == 'Rejected' or calling_agent_response.human_message == 'rejected'"
-      # On silence/hold the fallback delivers held_for_review — record it and
-      # let the Manager escalate to the CTO.
+      # Any other reply (hold / noted / the held_for_review fallback) is recorded.
       - agent: infra_audit_logger_agent
-        condition: "calling_agent_response.human_message == 'held_for_review'"
+        condition: "calling_agent_response.human_message != 'approve' and calling_agent_response.human_message != 'Approve' and calling_agent_response.human_message != 'Approved' and calling_agent_response.human_message != 'approved' and calling_agent_response.human_message != 'reject' and calling_agent_response.human_message != 'Reject' and calling_agent_response.human_message != 'Rejected' and calling_agent_response.human_message != 'rejected'"
 
   cto_human:
     name: cto_human
     agent_type: human
-    human_interface: webhook
+    human_interface: "default"   # the Inbox (no vault connection needed)
     communication_type: dual
     human_timeout_seconds: 28800     # 8 hours — final authority on major/data-tier changes
     description: "Chief Technology Officer — accountable owner; approves or holds major-cost / data-tier changes."
@@ -720,19 +729,22 @@ agents:
     fallback_response:
       human_decision: held
       human_message: held_for_review
-    webhook_config:
-      outbound_url: "${HITL_OUTBOUND_URL:http://127.0.0.1:9999/human-notify}"
-      outbound_headers: {Content-Type: "application/json"}
-      outbound_timeout: 30
+    human_prompt_template: |
+      A cost case needs the accountable owner (a stalled case from the
+      coordinator, or the Manager's escalation after repeated errors).
+      Reply "approve" to apply the case's right-size (the actuator still
+      re-checks it and refuses one it cannot recover), "reject", or "hold".
+      Every reply other than "approve" is recorded in the audit log.
     yields:
-      human_message: "string"        # approve | reject | held_for_review
+      human_message: "string"        # approve | reject | hold | held_for_review
     inputs:
       tune: "object"
     can_call:
       - agent: cost_tuner_agent
         condition: "calling_agent_response.human_message == 'approve' or calling_agent_response.human_message == 'Approve' or calling_agent_response.human_message == 'Approved' or calling_agent_response.human_message == 'approved'"
+      # Any other reply (reject / hold / the held_for_review fallback) is recorded.
       - agent: infra_audit_logger_agent
-        condition: "calling_agent_response.human_message == 'held_for_review' or calling_agent_response.human_message == 'reject' or calling_agent_response.human_message == 'rejected' or calling_agent_response.human_message == 'Reject' or calling_agent_response.human_message == 'Rejected'"
+        condition: "calling_agent_response.human_message != 'approve' and calling_agent_response.human_message != 'Approve' and calling_agent_response.human_message != 'Approved' and calling_agent_response.human_message != 'approved'"
 
   # ─────────────────────────────────────────────────────────────────────────
   # WORM audit sink — hash-chained, append-only, the terminus of every path.
@@ -742,7 +754,7 @@ agents:
     name: infra_audit_logger_agent
     agent_type: external
     framework: custom
-    communication_type: execute
+    communication_type: chain
     description: "WORM audit — hash-chains every applied tune, decision, veto, and held gate. Terminus."
     connector_config:
       sink_type: local_file

@@ -1,9 +1,9 @@
 """finops_governance_agent — Gwen, the FinOps governance analyst (fanned out).
 
-Gwen is an `llm` agent run with `instances: N`: each activation fans into N
+Gwen is an `llm` agent run with `scaling.copies.count: N`: each activation fans into N
 parallel copies that each claim a DISJOINT batch of the tag-sweep backlog
 (claim_resource_batch, an atomic claim tool) and report on THEIR batch. The
-SDK combines the copies (`instances_handoff: last`): counts SUM, lists concat.
+SDK combines the copies (`scaling.copies.handoff: last`): counts SUM, lists concat.
 
 This module owns the two things Python must — and it runs on the COMBINED
 result AFTER the merge (the @chain reshape receives the combined payload +
