@@ -10,12 +10,14 @@ deterministic **safety floor** re-derives `data_tier`/`blast_radius`/
 `is_safe_tune` from the resource kind + CMDB — a database, a critical-resource
 fan-out, or an over-cap tune can never auto-apply, whatever the model scored. A
 safe tune flows through **Vera** (compliance veto) to **Tucker** (the
-fail-closed actuator), which re-checks authorisation, applies it, renders the
-change record, and writes the WORM audit. A risky tune routes to **Maya**
-(`sre_human`); Axel stashed the floored payload pre-gate, so on approval Tucker
-recovers and applies it. A reject sends it back to Axel for a bounded
-re-proposal; silence default-denies (`held_for_review` → audit) and the Manager
-escalates to the **CTO**. Nothing irreversible happens without a human.
+fail-closed actuator), which re-checks authorisation, applies it (day 0: a
+ledger record, no cloud API call), renders the change record, and writes the
+WORM audit. A risky tune routes to **Maya** (`sre_human`); Axel stashed the
+floored payload pre-gate, so on approval Tucker recovers and applies it. A
+reject sends it back to Axel for a bounded re-proposal. If Maya does not answer
+within four hours, the card closes and the ticket records that no reply came —
+nothing is applied and nobody is chased. Nothing irreversible happens without
+a human.
 
 ## Pod shape
 
@@ -31,9 +33,10 @@ reference house style:
 - **Finisher** — `cost_tuner_agent` (Tucker): the artifact-producing actuator
   AFTER the human/auto-apply gate.
 - **Human members** — `sre_human` (Maya) and `cto_human` (accountable owner),
-  first-class, reached by webhook, default-deny on timeout.
-- **Supervisor** — the LeafMesh Manager (`routing: static`): reads every
-  hand-off; stalls / contract violations / repeated errors escalate to the CTO.
+  first-class, answering in Studio's Inbox; nothing is applied on silence.
+- **Supervisor** — the LeafMesh Manager (`routing: static`): escalates errors
+  to the CTO (a non-retryable error at once, 5 failed agents in a session, or
+  restarts used up). Contract violations alert people; they do not escalate.
 
 ## Flow
 
@@ -50,12 +53,13 @@ reference house style:
                                  cost_tuner_agent    sre_human ─(approve)─▶ cost_tuner_agent
         risky ──────────────────────▶ sre_human (Maya)    │  │
                                        (approve)───────────┘  ├─(reject, bounded)─▶ cost_anomaly_agent
-        re-proposal exhausted ──▶ audit                       └─(held / timeout)──▶ audit ─▶ [Manager ─▶ cto_human]
+        re-proposal exhausted ──▶ audit                       └─(any other reply)─▶ audit
+                                                  (no reply in 4 h: the card closes; nothing routes)
 
  iac_commit ──▶ iac_drift_agent ── critical ─▶ sre_human   ;  clean ─▶ audit
  weekly_commit_review / ri_expiry_alert / savings_plan_review ─▶ commitments_agent
         savings>0 ─▶ sre_human   ;   =0 ─▶ audit
- tag_compliance_sweep / budget_check ─▶ finops_governance_agent (×instances)
+ tag_compliance_sweep / budget_check ─▶ finops_governance_agent (×copies)
         action needed ─▶ sre_human   ;   clean ─▶ audit
  cost_tuner_agent ─▶ infra_audit_logger_agent   (hash-chained WORM terminus)
  cto_human ─(approve)─▶ cost_tuner_agent   ;   (else) ─▶ audit
@@ -69,12 +73,14 @@ reference house style:
 - **playbook** on `cost_anomaly_agent` — per-intent craft (`classify_anomaly`,
   `rightsize_tune`); only `description` rides in the prompt, `responsibility`
   loads on demand.
-- **instances** on `finops_governance_agent` — `instances: 2` + an atomic
+- **scaling.copies** on `finops_governance_agent` — `scaling.copies.count: 2` + an atomic
   `claim_resource_batch` tool fan the tag-sweep backlog across disjoint copies;
   a `@chain` reshape recomputes the ratio from the SUMMED counts post-merge.
-- **mcp** — a COMMENTED `mcp:` block on `cost_anomaly_agent` (the SDK rejects an
-  empty-URL http mcp at load, so it ships commented); dev-store tools carry
-  day-0. Wire `CLOUDOPS_MCP_URL`, then uncomment.
+- **mcp** — a COMMENTED `mcp:` block on `cost_anomaly_agent` picking the vault
+  connection `cloudops_mcp` (the address + token live only in the vault); dev-store
+  tools carry day-0. Create `cloudops_mcp` on Infrastructure → Integrations → MCP, then
+  uncomment it — in `configs/config.yaml` before the first start, in Studio's YAML
+  editor after it (applies live, no restart).
 - **timezone** — set next to every live `wake_up` (an un-timezoned cron fires in
   UTC): `cost_anomaly_agent` (daily), `commitments_agent` (Mon 07:00),
   `finops_governance_agent` (daily).
@@ -94,10 +100,13 @@ reference house style:
   over-cap → `is_safe_tune` false → SRE), the compliance/residency veto, the IaC
   blast-radius floor, the commitments savings floor (fail-closed to zero), and
   the FinOps coverage + budget-overage floors.
-- **Default-deny HITL**: SRE (4 h) and CTO (8 h) gates fall back to
-  `held_for_review` → audit; the Manager escalates. `dual` is on the human
-  boundary agents ONLY — no `dual`→`dual` wire (an SRE stall reaches the CTO via
-  the Manager, not a hardcoded human→human edge).
+- **Nothing on silence**: if the SRE (4 h) or CTO (8 h) does not answer, the
+  card closes and the ticket records it; nothing is applied and nobody is
+  chased. Both seats keep `fallback_on_timeout` + `fallback_response:
+  held_for_review` (routed to audit) as the declared intent — on leafmesh
+  2.4.486 a `dual` seat's timeout routes nothing. Every reply word routes:
+  approve → Tucker, reject → Axel (SRE only, bounded), anything else → audit.
+  `dual` is on the human boundary agents ONLY — no `dual`→`dual` wire.
 - **Bounded back-edge**: an SRE reject re-proposes via Axel, counted per session
   in the stash; past the cap `reproposal_exhausted` routes the turn to the audit
   terminus (Rule 3).
@@ -132,7 +141,7 @@ deterministic floors / actuator the LLM can't own; everything else is YAML.
 - `commitments_agent.py` — savings floor (fail-closed to zero) + `@compose`.
 - `iac_drift_agent.py` — blast-radius (critical-drift) floor.
 - `regulatory_monitor_agent.py` — residency/encryption veto floor.
-- `finops_governance_agent.py` — instances-merge coverage reshape + budget floor.
+- `finops_governance_agent.py` — copies-merge coverage reshape + budget floor.
 - `cost_tuner_agent.py` — the fail-closed, idempotent, artifact-producing finisher.
 
 Shared: `agency/tools.py` (day-0 dev-store tools + the atomic claim tool),

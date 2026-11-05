@@ -20,8 +20,8 @@ unchanged:
                               frameworks apply to which workload)
   * Budgets                 → AWS Budgets / GCP Budgets / Azure Cost Mgmt
 
-Setting the connector env vars alone does nothing until you wire the calls
-here. This is a SEEDED dev store, never the system of record (Rule 7): it
+Creating the cloudops_mcp vault connection and uncommenting the mcp block
+gives the agents real tools; the reads here stay the day-0 fallback. This is a SEEDED dev store, never the system of record (Rule 7): it
 ships a realistic wasted-idle anomaly, a data-tier RDS anomaly, an RI/SP
 commitment inventory, and an IaC drift item so the demo works out of the
 box. Applied tunes append to an in-store ledger so the idempotency
@@ -103,6 +103,8 @@ def _seeded(key: str, seed: Any) -> Any:
 
 # Cost / usage telemetry, keyed by tune_id. The anomaly webhook fires an
 # id; the detail (utilisation, current spec, cost) is pulled from here.
+# Costs are us-east-1 on-demand list prices × 730 h/month, in cents:
+# m5.4xlarge $0.768/h = $560.64; db.r5.4xlarge Multi-AZ $4.00/h = $2,920.
 # Two anchor anomalies drive the README story end-to-end:
 #   · the SAFE wasted_idle resize (auto-applies through every floor)
 #   · the DATA-TIER rds anomaly (the safety floor forces SRE regardless)
@@ -113,7 +115,7 @@ _SEED_TELEMETRY: dict[str, Any] = {
         "anomaly_type": "wasted_idle",
         "observed_avg_cpu_pct_7d": 3.4, "observed_p95_cpu_pct_7d": 7.1,
         "current_spec": {"instance_type": "m5.4xlarge", "vcpu": 16, "mem_gib": 64},
-        "monthly_cost_cents": 184220, "production_tier": False,
+        "monthly_cost_cents": 56064, "production_tier": False,
         "workload_id": "batch-etl-nightly",
     },
     "tune-2026-0613-rds-overprov": {
@@ -122,37 +124,43 @@ _SEED_TELEMETRY: dict[str, Any] = {
         "anomaly_type": "drift",
         "observed_avg_cpu_pct_7d": 11.0, "observed_p95_cpu_pct_7d": 22.0,
         "current_spec": {"instance_class": "db.r5.4xlarge", "vcpu": 16, "mem_gib": 128},
-        "monthly_cost_cents": 612000, "production_tier": True,
+        "monthly_cost_cents": 292000, "production_tier": True,
         "workload_id": "orders-primary-db",
     },
 }
 
-# Right-sizing reference — for each instance family, the next-smaller step
-# and its cost ratio. The savings math reads this (PROD: the pricing API).
+# Right-sizing reference — for each instance size, the step down and its cost
+# ratio. The step keeps observed p95 CPU under ~60% on the new size (the
+# orders DB at p95 22% of 16 vCPU goes to 8 vCPU, not 4). The savings math
+# reads this (PROD: the pricing API).
 _SEED_RIGHTSIZE_LADDER: dict[str, Any] = {
     "m5.4xlarge": {"step_down": "m5.large", "cost_ratio": 0.125},
     "m5.2xlarge": {"step_down": "m5.large", "cost_ratio": 0.25},
     "m5.xlarge":  {"step_down": "m5.large", "cost_ratio": 0.5},
     "m5.large":   {"step_down": "m5.large", "cost_ratio": 1.0},
-    "db.r5.4xlarge": {"step_down": "db.r5.xlarge", "cost_ratio": 0.25},
+    "db.r5.4xlarge": {"step_down": "db.r5.2xlarge", "cost_ratio": 0.5},
 }
 
 # Commitment / RI + Savings-Plan inventory. PROD: AWS RI/SP, GCP CUDs.
+# on_demand_monthly_cents = count × on-demand $/h × 730 (r5.xlarge $0.252/h,
+# m5.xlarge $0.192/h). The r5 RI expires in under 30 days (renew / re-shape /
+# lapse); the m5 RI is badly under-used (the waste case); the Savings Plan has
+# drifted under 80% utilisation.
 _SEED_COMMITMENTS: dict[str, Any] = {
     "as_of_utc": None,
     "reserved_instances": [
-        {"commit_id": "ri-r5-2y-2024-07", "type": "reserved_instance",
-         "family": "r5", "region": "us-east-1", "count": 8,
+        {"commit_id": "ri-r5-3y-2023-11", "type": "reserved_instance",
+         "family": "r5", "size": "xlarge", "region": "us-east-1", "count": 8,
          "expected_use_pct": 0.95, "actual_use_pct": 0.92,
-         "on_demand_monthly_cents": 472400, "expires_at_utc": "2026-07-15T00:00:00Z"},
-        {"commit_id": "ri-m5-1y-2025-02", "type": "reserved_instance",
-         "family": "m5", "region": "us-east-1", "count": 12,
+         "on_demand_monthly_cents": 147168, "expires_at_utc": "2026-11-28T00:00:00Z"},
+        {"commit_id": "ri-m5-1y-2026-02", "type": "reserved_instance",
+         "family": "m5", "size": "xlarge", "region": "us-east-1", "count": 12,
          "expected_use_pct": 0.90, "actual_use_pct": 0.41,    # under-used → waste
-         "on_demand_monthly_cents": 288000, "expires_at_utc": "2026-02-01T00:00:00Z"},
+         "on_demand_monthly_cents": 168192, "expires_at_utc": "2027-02-01T00:00:00Z"},
     ],
     "savings_plans": [
-        {"commit_id": "sp-1y-compute-2025-08", "type": "savings_plan",
-         "commitment_per_hour_usd": 4.2, "term_remaining_months": 14,
+        {"commit_id": "sp-3y-compute-2025-01", "type": "savings_plan",
+         "commitment_per_hour_usd": 4.2, "term_remaining_months": 26,
          "expected_use_pct": 0.95, "actual_use_pct": 0.73},   # drifted < 80%
     ],
 }
@@ -234,11 +242,11 @@ _SEED_BUDGETS: dict[str, Any] = {
 # Tagging API / CMDB inventory. Sized so a 2-copy fan-out splits it.
 REQUIRED_TAGS = ("cost_center", "env", "owner")
 _SEED_TAG_BACKLOG: list[dict[str, Any]] = [
-    {"resource_id": "i-0a1b2c3d", "kind": "ec2", "monthly_cost_cents": 184220,
+    {"resource_id": "i-0a1b2c3d", "kind": "ec2", "monthly_cost_cents": 56064,
      "tags": {"cost_center": "CC-DATA", "env": "prod", "owner": "data-eng"}},
-    {"resource_id": "db-prod-orders-1", "kind": "rds", "monthly_cost_cents": 612000,
+    {"resource_id": "db-prod-orders-1", "kind": "rds", "monthly_cost_cents": 292000,
      "tags": {"cost_center": "CC-ORDERS", "env": "prod", "owner": "orders"}},
-    {"resource_id": "i-0e4f5g6h", "kind": "ec2", "monthly_cost_cents": 92110,
+    {"resource_id": "i-0e4f5g6h", "kind": "ec2", "monthly_cost_cents": 14016,
      "tags": {"cost_center": "CC-WEB", "env": "prod", "owner": ""}},          # missing owner
     {"resource_id": "s3-assets-cdn", "kind": "s3", "monthly_cost_cents": 41000,
      "tags": {"cost_center": "", "env": "prod", "owner": "web"}},            # missing cost_center
@@ -302,7 +310,7 @@ def tag_inventory(cost_center: str = "") -> list[dict[str, Any]]:
 
 def claim_tag_batch(batch_size: int) -> list[dict[str, Any]]:
     """ATOMICALLY pop up to `batch_size` resources off the tag-sweep backlog
-    queue. Each fanned-out copy (instances: N) claims a DISJOINT batch, so the
+    queue. Each fanned-out copy (copies.count: N) claims a DISJOINT batch, so the
     copies never double-count. Lock-guarded + persisted so concurrent copies in
     one process split the queue. The queue REFILLS from the seed backlog once
     fully drained, so repeated sweeps keep working day-0. PROD: an atomic

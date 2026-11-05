@@ -1,12 +1,12 @@
 {
   "_entry_point": "savings_plan_review",
-  "_description": "Quarterly savings-plan review \u2014 utilisation dropped below 80%, commitments_agent quantifies impact + recommends rebalancing.",
+  "_description": "The 3-year compute Savings Plan ($4.20/h, 26 months left) ran at 73% against a 95% target \u2014 commitments_agent quantifies the waste and recommends a rebalance for FinOps.",
   "payload": {
-    "review_id": "spr-2026-q2",
+    "review_id": "spr-2026-q4",
     "cloud": "aws",
-    "savings_plan_id": "sp-1y-compute-2025-08",
+    "savings_plan_id": "sp-3y-compute-2025-01",
     "commitment_per_hour_usd": 4.2,
-    "term_remaining_months": 14,
+    "term_remaining_months": 26,
     "utilisation_30d_pct": 0.73,
     "target_utilisation_pct": 0.95
   }

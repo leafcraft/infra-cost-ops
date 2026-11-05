@@ -19,6 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Register the audit connector before SDK start
 import agency._shared.audit_logger  # noqa: F401
+import agency.tools  # noqa: F401 — @global_tool tools before start
 
 from leafmesh import LeafMesh, LeafMeshLogger
 
