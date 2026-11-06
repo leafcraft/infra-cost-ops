@@ -1,6 +1,6 @@
 """cost_anomaly_agent — Axel, the cost analyst + the SAFETY GATE floor.
 
-The LLM (configs/config.yaml, wrapped in super_agent) classifies the anomaly
+The LLM (defined in the configuration, wrapped in super_agent) classifies the anomaly
 + drafts the right-sizing tune, reading the telemetry through its tools
 (read_telemetry / read_blast_radius — dev store day-0). This module owns the
 things Python must:

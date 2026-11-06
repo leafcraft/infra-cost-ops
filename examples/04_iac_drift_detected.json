@@ -1,17 +1,17 @@
 {
   "_entry_point": "iac_commit",
-  "_description": "Terraform plan shows untracked changes in production VPC \u2014 IaC drift triggers SRE review.",
+  "_description": "terraform plan on prod shows the web ingress security group opened to 0.0.0.0/0 and a wildcard IAM trust policy \u2014 critical drift, so it goes to the SRE.",
   "payload": {
-    "tune_id": "drift-2026-06-04",
+    "tune_id": "drift-2026-11-02",
     "cloud": "aws",
     "resource_kind": "vpc",
     "resource_id": "vpc-prod-us-east-1",
     "anomaly_type": "iac_drift",
     "drifted_attributes": [
-      "security_groups[3].ingress",
-      "route_tables[1].routes"
+      "aws_security_group.web_ingress.ingress[3].cidr_blocks",
+      "aws_iam_role.batch_exec.assume_role_policy"
     ],
-    "drift_detected_at_utc": "2026-06-04T11:34:00Z",
-    "last_terraform_apply": "2026-05-30T16:22:00Z"
+    "drift_detected_at_utc": "2026-11-02T11:34:00Z",
+    "last_terraform_apply": "2026-10-28T16:22:00Z"
   }
 }

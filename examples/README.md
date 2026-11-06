@@ -5,6 +5,7 @@ Four realistic scenarios that exercise the major paths through this mesh.
 ## How to run
 
 ```bash
+create-leafmesh --load .   # once: loads the team into the Redis in .env (or use create-leafmesh --start .)
 python examples/run_examples.py                 # all scenarios
 python examples/run_examples.py 01_             # one scenario (substring match)
 ```

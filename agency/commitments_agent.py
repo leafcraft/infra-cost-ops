@@ -1,6 +1,6 @@
 """commitments_agent — SELF-RELIANT commitments analyst + savings floor.
 
-The LLM (configs/config.yaml) writes the utilisation review + the
+The LLM (defined in the configuration) writes the utilisation review + the
 rebalance narrative; this module owns the three things Python must:
 
 @pre_compose  load_commitments — pull the RI + Savings-Plan inventory
