@@ -17,8 +17,9 @@ concrete "@chain fails closed":
      DELETE the partial and record status=blocked with reasons — never a
      half-applied change.
   d) dev-store fallback that announces itself — records the apply in the store
-     ledger (dev stand-in) and returns a real rollback token; it NEVER fakes
-     an ack when nothing was applied (status/applied say exactly what happened).
+     ledger (dev stand-in; no cloud API is called) and returns a rollback
+     token; it NEVER fakes an ack when nothing was applied (status/applied say
+     exactly what happened).
 
 Two-layer defense: the BODY recovers + optimistically renders on its read; the
 @chain floor re-derives authorisation INDEPENDENTLY and deletes the artifact if
@@ -138,7 +139,7 @@ def _render_change_record(tune: dict, rollback_token: str, applied_at: str) -> s
              f"Safe (floored): {tune.get('is_safe_tune')}   Data-tier: {tune.get('data_tier')}",
              "", "## Proposed spec"]
     lines += [f"- {k}: {v}" for k, v in spec.items()] or ["- (empty)"]
-    lines += ["", "_Applied against the cloud API (dev: stub) and ledgered._"]
+    lines += ["", "_Dev: recorded in the applied-change ledger; no cloud API was called._"]
     path.write_text("\n".join(lines), encoding="utf-8")
     return str(path)
 
@@ -177,7 +178,9 @@ def enforce_apply_floor(result: Any, context: dict) -> dict:
     spec = tune.get("proposed_spec") or {}
     if not spec:
         result.update(applied=False, status="blocked")
-        result["block_reasons"].append("no tune payload recoverable after approval")
+        result["block_reasons"].append(
+            "no right-size spec recoverable after approval — nothing applied (approvals of "
+            "drift, commitment or tag items are recorded only)")
         _delete_partial(result)
         logger.error(f"[tuner] REFUSING to apply — no spec recoverable "
                      f"(tune={tune.get('tune_id') or '?'}).")

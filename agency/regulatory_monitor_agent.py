@@ -1,6 +1,6 @@
 """regulatory_monitor_agent — SELF-RELIANT compliance officer + VETO floor.
 
-The LLM (configs/config.yaml) writes the compliance narrative + cites the
+The LLM (defined in the configuration) writes the compliance narrative + cites the
 mandate; this module owns the two things the LLM must NOT be trusted with:
 
 @pre_compose  load_governance — pull the workload's data-classification +

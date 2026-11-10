@@ -1,14 +1,15 @@
 {
   "_entry_point": "ri_expiry_alert",
-  "_description": "Reserved Instance expires in 30 days \u2014 must renew, restructure, or let lapse. commitments_agent forecasts post-expiry on-demand cost.",
+  "_description": "The 8 \u00d7 r5.xlarge Reserved Instance expires on 28 Nov 2026 \u2014 renew, re-shape, or let it lapse? commitments_agent forecasts the on-demand cost after expiry ($1,471.68/month).",
   "payload": {
-    "alert_id": "ri-expiry-2026-06-04",
+    "alert_id": "ri-expiry-2026-11-03",
     "cloud": "aws",
-    "ri_id": "ri-r5-2y-2024-07",
-    "expires_at_utc": "2026-07-15T00:00:00Z",
+    "ri_id": "ri-r5-3y-2023-11",
+    "expires_at_utc": "2026-11-28T00:00:00Z",
     "instance_family": "r5",
+    "instance_size": "xlarge",
     "instance_count": 8,
     "current_utilisation_pct": 0.92,
-    "on_demand_monthly_cost_cents": 472400
+    "on_demand_monthly_cost_cents": 147168
   }
 }

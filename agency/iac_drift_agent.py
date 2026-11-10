@@ -1,6 +1,6 @@
 """iac_drift_agent — SELF-RELIANT drift reconciler + blast-radius floor.
 
-The LLM (configs/config.yaml) writes the drift narrative; this module owns
+The LLM (defined in the configuration) writes the drift narrative; this module owns
 the two things Python must:
 
 @pre_compose  load_drift_state — pull the last `terraform plan` / Pulumi

@@ -19,6 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 # Register the audit connector before SDK start
 import agency._shared.audit_logger  # noqa: F401
+import agency.tools  # noqa: F401 — @global_tool tools before start
 
 from leafmesh import LeafMesh, LeafMeshLogger
 
@@ -65,7 +66,9 @@ async def main() -> int:
         print("No scenarios matched.")
         return 1
 
-    sdk = LeafMesh.from_yaml("configs/config.yaml")
+    from dotenv import load_dotenv
+    load_dotenv()
+    sdk = LeafMesh.from_store()
     await sdk.start()
     try:
         for scenario_path in scenarios:
