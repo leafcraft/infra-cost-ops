@@ -65,7 +65,7 @@ def _is_reject_reentry(input_data: dict[str, Any]) -> bool:
     if isinstance(hd, dict):
         sources.append(hd)
     for src in sources:
-        for key in ("human_message", "human_decision", "decision", "message"):
+        for key in ("verdict", "human_message", "human_decision", "decision", "message"):
             val = src.get(key)
             if isinstance(val, str) and val.strip().lower() in _REJECT_TOKENS:
                 return True
@@ -224,7 +224,7 @@ async def enforce_safety_floor(result: Any, ctx: Any) -> Any:
     return fill_rightsizing(floored, tel)
 
 
-# ── @chain — stash the floored tune payload before the SRE gate ───────
+# ── @chain — stash the floored tune payload before the SRE step ───────
 async def stash_tune(result: Any, ctx: Any) -> Any:
     result = _parse(result)
     # The body resolved the session_id (it has input_data) and carried it

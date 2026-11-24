@@ -15,7 +15,7 @@ ledger record, no cloud API call), renders the change record, and writes the
 WORM audit. A risky tune routes to **Maya** (`sre_human`); Axel stashed the
 floored payload pre-gate, so on approval Tucker recovers and applies it. A
 reject sends it back to Axel for a bounded re-proposal. If Maya does not answer
-within four hours, the card closes and the ticket records that no reply came —
+within four hours, the seat's default reply, `hold`, goes to the audit log —
 nothing is applied and nobody is chased. Nothing irreversible happens without
 a human.
 
@@ -31,7 +31,7 @@ reference house style:
   `regulatory_monitor_agent` (Vera, compliance veto), `finops_governance_agent`
   (Gwen, tag/budget governance, fanned out).
 - **Finisher** — `cost_tuner_agent` (Tucker): the artifact-producing actuator
-  AFTER the human/auto-apply gate.
+  AFTER the human or auto-apply step.
 - **Human members** — `sre_human` (Maya) and `cto_human` (accountable owner),
   first-class, answering in Studio's Inbox; nothing is applied on silence.
 - **Supervisor** — the LeafMesh Manager (`routing: static`): escalates errors
@@ -53,8 +53,8 @@ reference house style:
                                  cost_tuner_agent    sre_human ─(approve)─▶ cost_tuner_agent
         risky ──────────────────────▶ sre_human (Maya)    │  │
                                        (approve)───────────┘  ├─(reject, bounded)─▶ cost_anomaly_agent
-        re-proposal exhausted ──▶ audit                       └─(any other reply)─▶ audit
-                                                  (no reply in 4 h: the card closes; nothing routes)
+        re-proposal exhausted ──▶ audit                       └─(hold)─▶ audit
+                                                  (no reply in 4 h: default hold ─▶ audit)
 
  iac_commit ──▶ iac_drift_agent ── critical ─▶ sre_human   ;  clean ─▶ audit
  weekly_commit_review / ri_expiry_alert / savings_plan_review ─▶ commitments_agent
@@ -99,13 +99,14 @@ reference house style:
   over-cap → `is_safe_tune` false → SRE), the compliance/residency veto, the IaC
   blast-radius floor, the commitments savings floor (fail-closed to zero), and
   the FinOps coverage + budget-overage floors.
-- **Nothing on silence**: if the SRE (4 h) or CTO (8 h) does not answer, the
-  card closes and the ticket records it; nothing is applied and nobody is
-  chased. Both seats keep `fallback_on_timeout` + `fallback_response:
-  held_for_review` (routed to audit) as the declared intent — on leafmesh
-  2.4.486 a `dual` seat's timeout routes nothing. Every reply word routes:
-  approve → Tucker, reject → Axel (SRE only, bounded), anything else → audit.
-  `dual` is on the human boundary agents ONLY — no `dual`→`dual` wire.
+- **Nothing on silence**: if the SRE (4 h) or CTO (8 h) does not answer,
+  `fallback_on_timeout` + `fallback_response` (`verdict: hold`,
+  `held_for_review`) goes through the seat's routes like any reply and lands
+  in audit; nothing is applied and nobody is chased. Both seats are `chain`
+  with a `reply_reader` (`gpt-4o-mini`) that turns the typed reply into a
+  `verdict`, and every verdict routes: approve → Tucker, reject → Axel (SRE
+  only, bounded), hold → audit, answer → only the agent that asked. No person
+  seat calls another person seat.
 - **Bounded back-edge**: an SRE reject re-proposes via Axel, counted per session
   in the stash; past the cap `reproposal_exhausted` routes the turn to the audit
   terminus (Rule 3).

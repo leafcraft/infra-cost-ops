@@ -1,7 +1,7 @@
 # infra-cost-ops — Infra Cost-Ops Pod
 
 Continuous cloud-cost tuning as a **pod** — a coordinator, four analysts, a
-compliance officer, a fail-closed actuator, two human gates, and a supervisor.
+compliance officer, a fail-closed actuator, two human members, and a supervisor.
 An anomaly is opened as a case, classified and turned into a right-sizing tune
 (blast-radius scored), compliance-vetoed, gated by an SRE on anything risky,
 applied by a fail-closed actuator, and hash-chained into a WORM audit. The CTO
@@ -39,8 +39,8 @@ near 44%. Axel already stashed the floored tune payload keyed by session
 from that stash and applies it. If Maya rejects, it goes back to Axel for a more
 conservative re-proposal — **bounded**: after two rejects the loop terminates
 into the audit sink, never forever. If Maya never answers within four hours,
-the request waits no longer: its Inbox card closes and the ticket records that
-no reply came. Nothing is applied, and nobody is chased automatically. Nothing
+the seat's default reply, `hold`, is recorded in the audit log. Nothing is
+applied, and nobody is chased automatically. Nothing
 irreversible happens without a human, and nothing is lost across a hand-off.
 
 ## 2. Why it works in an organization
@@ -55,7 +55,7 @@ production data tiers, SLA-affecting resizes, critical-resource drift
 moves. The discipline is the reference house style: **agents produce, humans
 decide, systems record — and silence never advances anything.** The ROI is
 twofold: **recovered spend** (right-sizing + reservation rebalancing run weekly,
-not quarterly) and **avoided incidents** (an SRE gate that never approves on
+not quarterly) and **avoided incidents** (an SRE step that never approves on
 silence, a deterministic safety floor the LLM can't waive, and a fail-closed actuator mean
 an unrecoverable, unreviewed, or non-compliant change is never applied). Every
 applied tune is hash-chained into a WORM log, so finance and security get an
@@ -66,7 +66,7 @@ audit trail for free.
 ### Tier 1 — Boot (required to start the mesh)
 | Var | Required | Purpose |
 |---|---|---|
-| `LEAFMESH_LICENSE_KEY` | yes | Starts the SDK. |
+| `LEAFMESH_LICENSE_KEY` | first start | Not kept in `.env`: `create-leafmesh --start` (or `--load`) asks for it once at the first start to sign this environment in (leafmesh 2.4.538+) |
 | `LEAFMESH_ENV_TOKEN` | yes | Per-environment telemetry token (dev/staging/prod). |
 | `OPENAI_API_KEY` | yes | Used by every `llm` agent (`gpt-4o-mini`). |
 
@@ -74,7 +74,7 @@ audit trail for free.
 | Var | Required | Purpose |
 |---|---|---|
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | optional | Session store. Defaults to `localhost:6379`, no auth (bring your own Redis, or let `create-leafmesh --start .` start one). |
-| *(vault connection, any name)* | optional | The SRE / CTO gates answer in Studio's Inbox. To notify an external tool instead, create a vault connection (an "Add custom" record on the Infrastructure page, service type 'Outbound webhook') and set `webhook_config: {connection: <name>}` on the seat. |
+| *(vault connection, any name)* | optional | The SRE / CTO reviewers answer in Studio's Inbox. To notify an external tool instead, create a vault connection (an "Add custom" record on the Infrastructure page, service type 'Outbound webhook') and set `webhook_config: {connection: <name>}` on the seat. |
 | *(vault connection `escalation_webhook`)* | optional | PagerDuty Events v2 endpoint for the Manager's `webhook` escalation target: create vault connection `escalation_webhook` (an "Add custom" record on the Infrastructure page, service type 'Outbound webhook'), then uncomment the webhook target — in Studio's raw YAML editor (see *Changing the configuration*). |
 
 ### Tier 3 — Connectors (wire when you adopt that capability)
@@ -134,8 +134,8 @@ through. The SRE's approval request lands in **Studio → Inbox** — answer it 
 | `regulatory_monitor_agent` (Vera) | Compliance Officer (cloud) | Vetoes tunes violating residency / encryption mandates. `@chain` **veto floor** re-runs the checks and forces `vetoed=true` on any violation (fail-closed — raise a veto, never clear one); cross-session veto ledger in agent memory. `llm`. | → `sre_human` (vetoed) · → `cost_tuner_agent` (clean) |
 | `finops_governance_agent` (Gwen) | FinOps Governance Analyst | Tag-compliance sweep (fanned out with `scaling.copies.count: 2` + an **atomic claim tool** so copies split the backlog) + budget/forecast/overage alerts. `@chain` recomputes the ratio from the SUMMED counts post-merge and enforces the **budget-overage floor**. `llm`, daily wake (timezoned). | → `sre_human` (action needed) · → `infra_audit_logger_agent` (clean) |
 | `cost_tuner_agent` (Tucker) | Cloud Change Actuator (finisher) | Applies an authorised tune (day 0: records it in the applied-change ledger; no cloud API call). Re-checks authorisation (approve TOKEN allow/deny-lists, unknown → **fail closed**; OR a floored-safe tune), renders the change record to `./out`, **deletes it on a blocked floor**, and is **idempotent** (a re-fired approval is a no-op). `programmatic`. | → `infra_audit_logger_agent` (always) |
-| `sre_human` (Maya) | Site Reliability Engineer | Reviews risky tunes, compliance vetoes, critical drift, commitment recommendations and tag / budget actions; approve / reject / hold (non-tune items: noted / hold). 4 h; nothing is applied on silence. `human`, `dual`, Studio Inbox. | → `cost_tuner_agent` (approve) · → `cost_anomaly_agent` (reject, bounded) · → `infra_audit_logger_agent` (any other reply) |
-| `cto_human` | Chief Technology Officer | Accountable owner — gets stalled cases from Cyra and the Manager's error escalations; approve / reject / hold. 8 h; nothing is applied on silence. `human`, `dual`, Studio Inbox. | → `cost_tuner_agent` (approve) · → `infra_audit_logger_agent` (any other reply) |
+| `sre_human` (Maya) | Site Reliability Engineer | Reviews risky tunes, compliance vetoes, critical drift, commitment recommendations and tag / budget actions; verdict approve / reject / hold. 4 h; nothing is applied on silence. `human`, `chain` with a reply reader, Studio Inbox. | → `cost_tuner_agent` (approve) · → `cost_anomaly_agent` (reject, bounded) · → `infra_audit_logger_agent` (hold) · `answer` → only the agent that asked |
+| `cto_human` | Chief Technology Officer | Accountable owner — gets stalled cases from Cyra and the Manager's error escalations; verdict approve / hold. 8 h; nothing is applied on silence. `human`, `chain` with a reply reader, Studio Inbox. | → `cost_tuner_agent` (approve) · → `infra_audit_logger_agent` (hold) · `answer` → only the agent that asked |
 | `infra_audit_logger_agent` | Audit & Compliance Recorder | Append-only hash-chained WORM record of every applied tune + decision + held gate. `external` (`framework: custom`), registered via `mesh.intelligence()` in `main.py`. | (audit terminus) |
 
 Gwen's two copies split the tag-sweep backlog with her own atomic claim tool
@@ -146,12 +146,16 @@ not made in this template.
 
 ### When nobody answers
 
+The Inbox has no buttons. The person types a reply, and a small reply reader
+(`gpt-4o-mini`) turns it into a `verdict` from the seat's list. Anything that
+is not a clear yes or no — not now, wait — reads as `hold`. If the person
+answered an agent's question instead of deciding, the verdict is `answer` and
+it goes back to only the agent that asked.
+
 Nothing risky is applied on silence. If the SRE does not answer within four
-hours (the CTO: eight), the request waits no longer: its Inbox card closes and
-the ticket records that no reply came. Nobody is chased automatically. Both
-seats keep `fallback_on_timeout` / `fallback_response: held_for_review` in
-config as the declared intent; on leafmesh 2.4.486 a timeout on these seats
-routes nothing.
+hours (the CTO: eight), the seat's default reply (`fallback_response`:
+`verdict: hold`, `held_for_review`) goes through its routes like any reply and
+is recorded in the audit log. Nobody is chased automatically.
 
 The **Manager** (`gpt-4o-mini`, `routing: static`) is the **supervisor**, not a
 router. It escalates to the CTO only on errors: a non-retryable error (sign-in,

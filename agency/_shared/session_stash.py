@@ -5,7 +5,7 @@ with ONLY the human-response meta fields (human_message, human_decision,
 …) — the invoice payload that was flowing through the chain is not
 re-delivered to the next agent. The approval_router stashes the full
 merged invoice context here, keyed by session_id, so erp_poster (and
-the audit sink) can recover it after the human gate.
+the audit sink) can recover it after the human step.
 
 In-process only — survives the human wait because the mesh is one
 process. A multi-replica deployment swaps this for the Redis session

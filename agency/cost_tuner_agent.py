@@ -1,6 +1,6 @@
 """Tucker — Cloud Change Actuator (the FINISHER / actuator).
 
-auto_discover matches `cost_tuner_agent`. Tucker sits BEHIND the SRE/CTO gate
+auto_discover matches `cost_tuner_agent`. Tucker sits BEHIND the SRE/CTO review
 and the auto-apply safety floor. It never decides safety itself — it is the
 concrete "@chain fails closed":
 
@@ -56,7 +56,7 @@ def _signal(input_data: dict) -> str:
     if isinstance(hd, dict):
         sources.append(hd)
     for src in sources:
-        for key in ("human_message", "human_decision", "decision", "message"):
+        for key in ("verdict", "human_message", "human_decision", "decision", "message"):
             val = src.get(key)
             if isinstance(val, str) and val.strip():
                 return val.strip().lower()
@@ -83,7 +83,7 @@ def _lookup(key: str, *sources: Any) -> Any:
 
 def _recover_tune(input_data: dict, context: dict) -> dict:
     """Recover the tune across the HITL boundary: upstream -> human_data ->
-    stash -> dev store. After a human gate the SDK re-delivers only the
+    stash -> dev store. After a human step the SDK re-delivers only the
     human-response meta, so the spec must come from the pre-gate stash."""
     sources = (
         input_data,
